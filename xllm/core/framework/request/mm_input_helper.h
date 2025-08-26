@@ -20,6 +20,10 @@ struct MMInputItem {
   std::string raw_data_;  // binary
 
   torch::Tensor decode_data_;  // image: rgb, [c,h,w], uint8
+
+  float fps_;
+
+  std::string path_;
 };
 
 using MMInputItemVec = std::vector<MMInputItem>;

@@ -26,6 +26,103 @@ class OpenCVImageDecoder {
   }
 };
 
+class OpenCVVideoDecoder {
+ public:
+  bool decode_from_file(const std::string& path,
+                        std::vector<torch::Tensor>& frames,
+                        float& fps_out) {
+    // 1) 建临时目录
+    char tmpl[] = "/tmp/xllm_ffmpeg_frames_XXXXXX";
+    char* dir = mkdtemp(tmpl);
+    if (!dir) {
+      LOG(ERROR) << "mkdtemp failed";
+      return false;
+    }
+    std::string out_dir = dir;
+
+    // 2) 用 ffmpeg 抽帧（默认全部帧；如需抽帧率可加 -r 或 -vf fps=）
+    //    -hide_banner -loglevel error 保持安静；%05d 有序命名
+    std::string cmd = "ffmpeg -hide_banner -loglevel error -y -i \"" + path +
+                      "\" \"" + out_dir + "/frame_%05d.png\"";
+    int ret = std::system(cmd.c_str());
+    if (ret != 0) {
+      LOG(ERROR) << "ffmpeg extract failed, code=" << ret;
+      cleanup_dir(out_dir);
+      return false;
+    }
+
+    // 3) 逐帧读入（imgcodecs/imgproc/core，与你现在图片路径一样）
+    frames.clear();
+    for (int idx = 1;; ++idx) {
+      char name[64];
+      std::snprintf(name, sizeof(name), "/frame_%05d.png", idx);
+      std::string fpath = out_dir + name;
+      if (!std::filesystem::exists(fpath)) break;
+
+      cv::Mat bgr = cv::imread(fpath, cv::IMREAD_COLOR);
+      if (bgr.empty()) break;
+
+      cv::Mat rgb;
+      cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB);
+
+      torch::Tensor t =
+          torch::from_blob(rgb.data, {rgb.rows, rgb.cols, 3}, torch::kUInt8)
+              .permute({2, 0, 1})  // [3,H,W]
+              .clone();
+      frames.emplace_back(std::move(t));
+    }
+
+    // 4) 清理临时目录
+    cleanup_dir(out_dir);
+
+    if (frames.empty()) {
+      LOG(ERROR) << "no frames extracted by ffmpeg";
+      return false;
+    }
+
+    // 5) fps：拿不到就给默认（可选：用 ffprobe 获取真 fps）
+    fps_out = 2.0f;
+    return true;
+  }
+
+  // 复用你已有的从字节 -> 临时文件 -> 调上面
+  bool decode_from_bytes(const std::string& raw,
+                         std::vector<torch::Tensor>& frames,
+                         float& fps_out) {
+    std::string tmp;
+    if (!write_to_temp_file(raw, tmp)) return false;
+    bool ok = decode_from_file(tmp, frames, fps_out);
+    std::remove(tmp.c_str());
+    return ok;
+  }
+
+ private:
+  static void cleanup_dir(const std::string& dir) {
+    std::error_code ec;
+    for (auto& p : std::filesystem::directory_iterator(dir, ec)) {
+      std::filesystem::remove_all(p.path(), ec);
+    }
+    std::filesystem::remove_all(dir, ec);
+  }
+
+  static bool write_to_temp_file(const std::string& data, std::string& out) {
+    char tmpl[] =
+        "/export/home/wangziyue.28/test/temp/xllm_video_image_XXXXXX.tmp";
+    int fd = mkstemps(tmpl, 4);
+    if (fd == -1) return false;
+    FILE* f = fdopen(fd, "wb");
+    if (!f) {
+      close(fd);
+      return false;
+    }
+    size_t n = fwrite(data.data(), 1, data.size(), f);
+    fclose(f);
+    if (n != data.size()) return false;
+    out.assign(tmpl);
+    return true;
+  }
+};
+
 class Handler {
  public:
   bool process(const proto::MMInputData& msg, MMInputItem& input) {
@@ -92,11 +189,77 @@ class ImageHandler : public Handler {
   const std::string dataurl_prefix_;
 };
 
+class VideoHandler : public Handler {
+ public:
+  VideoHandler()
+      : dataurl_prefix_("data:video"),
+        http_prefix1_("http://"),
+        http_prefix2_("https://") {}
+
+  bool load(const proto::MMInputData& msg, MMInputItem& input) override {
+    input.clear();
+
+    const auto& video_url = msg.video_url();
+    const auto& url = video_url.url();
+
+    input.type_ = MMType::VIDEO;
+
+    // base64
+    if (url.compare(0, dataurl_prefix_.size(), dataurl_prefix_) == 0) {
+      return this->load_from_dataurl(url, input.raw_data_);
+    }
+    // httpurl
+    else if (url.compare(0, http_prefix1_.size(), http_prefix1_) == 0 ||
+             url.compare(0, http_prefix2_.size(), http_prefix2_) == 0) {
+      return this->load_from_http(url, input.path_);
+    }
+    // local
+    else if (!url.empty()) {
+      return this->load_from_local(url, input.path_);
+    } else {
+      return false;
+    }
+  }
+
+  bool decode(MMInputItem& input) override {
+    OpenCVVideoDecoder decoder;
+
+    std::vector<torch::Tensor> frames;
+    float fps = 2.0f;
+
+    bool ok = false;
+
+    // raw_data(httpurl,base64)
+    if (!input.raw_data_.empty()) {
+      ok = decoder.decode_from_bytes(input.raw_data_, frames, fps);
+    }
+
+    // load_from_local/http->input.path_
+    else if (!input.path_.empty()) {
+      ok = decoder.decode_from_file(input.path_, frames, fps);
+    }
+
+    if (!ok) {
+      LOG(ERROR) << "VideoHandler decode failed";
+      return false;
+    }
+
+    input.decode_data_ = torch::stack(frames, 0);  // [T,C,H,W]
+    input.fps_ = fps;
+
+    return true;
+  }
+
+ private:
+  const std::string dataurl_prefix_;
+  const std::string http_prefix1_, http_prefix2_;
+};
+
 class MMHandlerSet {
  public:
   MMHandlerSet() {
     handlers_["image_url"] = std::make_unique<ImageHandler>();
-    // handlers_["video_url"] = std::make_unique<VideoHandler>();
+    handlers_["video_url"] = std::make_unique<VideoHandler>();
     // handlers_["audio_url"] = std::make_unique<AudioHandler>();
   }
 

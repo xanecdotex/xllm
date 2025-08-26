@@ -21,6 +21,12 @@ class Qwen2VLImageProcessor : public ImageProcessor {
                      std::vector<torch::Tensor>& pixel_values,
                      std::vector<int64_t>& grids);
 
+  bool process_videos(std::vector<torch::Tensor> videos, MMData& mm_datas);
+  bool process_video(
+      torch::Tensor video,  // [T, C, H, W], dtype = uint8 or float
+      std::vector<torch::Tensor>& pixel_values,  // push 一个视频的所有 patch
+      std::vector<int64_t>& grids);
+
  private:
   bool do_convert_rgb_ = true;
   bool do_normalize_ = true;

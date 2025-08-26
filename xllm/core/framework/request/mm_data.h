@@ -45,7 +45,7 @@ struct MMData {
   MMData() = default;
   MMData(uint32_t ty, const MMDict& data) : ty_(ty), data_(std::move(data)) {}
 
-  bool has(uint32_t type) const { return type & ty_ != 0; }
+  bool has(uint32_t type) const { return (type & ty_) != 0; }
   bool has(const MMKey& key) const {
     if (!valid()) return false;
 
