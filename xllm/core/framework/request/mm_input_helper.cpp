@@ -28,97 +28,83 @@ class OpenCVImageDecoder {
 
 class OpenCVVideoDecoder {
  public:
+  bool decode_from_bytes(const std::string& raw_data,
+                         std::vector<torch::Tensor>& frames,
+                         float& fps_out) {
+    // 1) 将 raw bytes 落盘为临时文件（cv::VideoCapture 不支持直接从内存解码）
+    std::string tmp_path;
+    if (!write_to_temp_file(raw_data, tmp_path)) {
+      LOG(ERROR) << "write_to_temp_file failed";
+      return false;
+    }
+
+    bool ok = decode_from_file(tmp_path, frames, fps_out);
+
+    // 清理临时文件
+    // std::remove(tmp_path.c_str());
+    return ok;
+  }
+
+  // 从本地文件路径解码
   bool decode_from_file(const std::string& path,
                         std::vector<torch::Tensor>& frames,
                         float& fps_out) {
-    // 1) 建临时目录
-    char tmpl[] = "/tmp/xllm_ffmpeg_frames_XXXXXX";
-    char* dir = mkdtemp(tmpl);
-    if (!dir) {
-      LOG(ERROR) << "mkdtemp failed";
-      return false;
-    }
-    std::string out_dir = dir;
-
-    // 2) 用 ffmpeg 抽帧（默认全部帧；如需抽帧率可加 -r 或 -vf fps=）
-    //    -hide_banner -loglevel error 保持安静；%05d 有序命名
-    std::string cmd = "ffmpeg -hide_banner -loglevel error -y -i \"" + path +
-                      "\" \"" + out_dir + "/frame_%05d.png\"";
-    int ret = std::system(cmd.c_str());
-    if (ret != 0) {
-      LOG(ERROR) << "ffmpeg extract failed, code=" << ret;
-      cleanup_dir(out_dir);
+    cv::VideoCapture cap;
+    if (!cap.open(path)) {
+      LOG(ERROR) << "OpenCVVideoDecoder open failed: " << path;
       return false;
     }
 
-    // 3) 逐帧读入（imgcodecs/imgproc/core，与你现在图片路径一样）
+    // 读取 FPS（可能为 0/NaN）
+    double fps = cap.get(cv::CAP_PROP_FPS);
+    if (!(fps > 0.0) || std::isnan(fps)) fps = 2.0;  // 与你 Python 侧默认一致
+    fps_out = static_cast<float>(fps);
+
     frames.clear();
-    for (int idx = 1;; ++idx) {
-      char name[64];
-      std::snprintf(name, sizeof(name), "/frame_%05d.png", idx);
-      std::string fpath = out_dir + name;
-      if (!std::filesystem::exists(fpath)) break;
-
-      cv::Mat bgr = cv::imread(fpath, cv::IMREAD_COLOR);
+    cv::Mat bgr;
+    while (true) {
+      if (!cap.read(bgr)) break;
       if (bgr.empty()) break;
 
       cv::Mat rgb;
       cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB);
 
+      // [H, W, 3] → [C, H, W]，uint8；clone 以拥有数据
       torch::Tensor t =
           torch::from_blob(rgb.data, {rgb.rows, rgb.cols, 3}, torch::kUInt8)
-              .permute({2, 0, 1})  // [3,H,W]
+              .permute({2, 0, 1})  // [3, H, W]
               .clone();
+
       frames.emplace_back(std::move(t));
     }
 
-    // 4) 清理临时目录
-    cleanup_dir(out_dir);
-
     if (frames.empty()) {
-      LOG(ERROR) << "no frames extracted by ffmpeg";
+      LOG(ERROR) << "OpenCVVideoDecoder got 0 frame: " << path;
       return false;
     }
-
-    // 5) fps：拿不到就给默认（可选：用 ffprobe 获取真 fps）
-    fps_out = 2.0f;
     return true;
   }
 
-  // 复用你已有的从字节 -> 临时文件 -> 调上面
-  bool decode_from_bytes(const std::string& raw,
-                         std::vector<torch::Tensor>& frames,
-                         float& fps_out) {
-    std::string tmp;
-    if (!write_to_temp_file(raw, tmp)) return false;
-    bool ok = decode_from_file(tmp, frames, fps_out);
-    std::remove(tmp.c_str());
-    return ok;
-  }
-
  private:
-  static void cleanup_dir(const std::string& dir) {
-    std::error_code ec;
-    for (auto& p : std::filesystem::directory_iterator(dir, ec)) {
-      std::filesystem::remove_all(p.path(), ec);
-    }
-    std::filesystem::remove_all(dir, ec);
-  }
-
-  static bool write_to_temp_file(const std::string& data, std::string& out) {
+  bool write_to_temp_file(const std::string& data, std::string& out_path) {
+    // 用 mkstemp 生成安全的临时文件
     char tmpl[] =
-        "/export/home/wangziyue.28/test/temp/xllm_video_image_XXXXXX.tmp";
-    int fd = mkstemps(tmpl, 4);
+        "/export/home/wangziyue.28/test/temp/xllm_video_XXXXXX.mp4";  // 后缀仅用于提示；容器里一般也能解
+    int fd = mkstemps(tmpl, 4 /*“.mp4”长度*/);
     if (fd == -1) return false;
+
+    // 写入字节
     FILE* f = fdopen(fd, "wb");
     if (!f) {
       close(fd);
       return false;
     }
-    size_t n = fwrite(data.data(), 1, data.size(), f);
+    size_t written = fwrite(data.data(), 1, data.size(), f);
+    fflush(f);
     fclose(f);
-    if (n != data.size()) return false;
-    out.assign(tmpl);
+
+    if (written != data.size()) return false;
+    out_path.assign(tmpl);
     return true;
   }
 };

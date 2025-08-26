@@ -210,24 +210,21 @@ bool Qwen2VLImageProcessor::process_image(
 
 bool Qwen2VLImageProcessor::process_videos(std::vector<torch::Tensor> videos,
                                            MMData& mm_datas) {
-  // std::vector<torch::Tensor> pixel_values;
-  // std::vector<int64_t> grids;
+  std::vector<torch::Tensor> pixel_values;
+  std::vector<int64_t> grids;
 
-  // for (auto& vid : videos) {
-  //   if (!this->process_video(vid, pixel_values, grids)) {
-  //     return false;
-  //   }
-  // }
+  for (auto& vid : videos) {
+    if (!this->process_video(vid, pixel_values, grids)) {
+      return false;
+    }
+  }
 
-  // auto values = torch::cat(pixel_values);     // [sum(Nv), C*Tps*P*P]
-  // auto thw    = torch::tensor(grids).clone().reshape({-1, 3});  // [Nv, 3]
+  auto values = torch::cat(pixel_values);  // [sum(Nv), C*Tps*P*P]
+  auto thw = torch::tensor(grids).clone().reshape({-1, 3});  // [Nv, 3]
 
-  // mm_datas = MMData(MMType::VIDEO, {
-  //     {"image_grid_thw", thw},
-  //     {"pixel_values",   values}
-  // });
-  // return true;
-  return false;
+  mm_datas = MMData(MMType::VIDEO,
+                    {{"image_grid_thw", thw}, {"pixel_values", values}});
+  return true;
 }
 
 bool Qwen2VLImageProcessor::process_video(
