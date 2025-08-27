@@ -92,7 +92,10 @@
     {
       "name": "opencv",
       "version>=": "4.7.0",
-      "default-features": false
+      "default-features": false,
+      "features": [
+      "ffmpeg"
+    ]
     }
   ],
   "builtin-baseline": "fba75d09065fcc76a25dcf386b1d00d33f5175af"

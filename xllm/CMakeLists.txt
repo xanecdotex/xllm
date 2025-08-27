@@ -29,6 +29,19 @@ cc_binary(
 )
 
 # link brpc
+find_library(OPENCV_VIDEOIO_LIB
+  NAMES opencv_videoio4 opencv_videoio
+  PATHS
+    ${CMAKE_BINARY_DIR}/vcpkg_installed/x64-linux/lib
+    ${CMAKE_BINARY_DIR}/cmake.linux-x86_64-cpython-311/vcpkg_installed/x64-linux/lib
+    $ENV{VCPKG_ROOT}/installed/x64-linux/lib
+  NO_DEFAULT_PATH)
+
+if(NOT OPENCV_VIDEOIO_LIB)
+  message(FATAL_ERROR "Could not find libopencv_videoio*.a")
+endif()
+
+target_link_libraries(xllm PRIVATE -Wl,--push-state,--whole-archive ${OPENCV_VIDEOIO_LIB} -Wl,--pop-state)
 target_link_libraries(xllm PRIVATE brpc leveldb::leveldb ZLIB::ZLIB protobuf::libprotobuf ${OpenCV_LIBS})
 add_dependencies(xllm brpc-static)
 
