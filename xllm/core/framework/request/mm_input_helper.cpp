@@ -41,7 +41,7 @@ class OpenCVVideoDecoder {
     bool ok = decode_from_file(tmp_path, frames, fps_out);
 
     // 清理临时文件
-    // std::remove(tmp_path.c_str());
+    std::remove(tmp_path.c_str());
     return ok;
   }
 
@@ -57,7 +57,7 @@ class OpenCVVideoDecoder {
 
     // 读取 FPS（可能为 0/NaN）
     double fps = cap.get(cv::CAP_PROP_FPS);
-    if (!(fps > 0.0) || std::isnan(fps)) fps = 2.0;  // 与你 Python 侧默认一致
+    if (!(fps > 0.0) || std::isnan(fps)) fps = 2.0;  // 与Python 侧默认一致
     fps_out = static_cast<float>(fps);
 
     frames.clear();

@@ -84,7 +84,8 @@ Qwen2VLImageProcessor::Qwen2VLImageProcessor(const ModelArgs& args) {
 bool Qwen2VLImageProcessor::process(const MMInput& inputs, MMData& datas) {
   std::vector<torch::Tensor> images = inputs.get_decode_data(MMType::IMAGE);
   std::vector<torch::Tensor> videos = inputs.get_decode_data(MMType::VIDEO);
-  LOG(INFO) << "video size:" << videos.size();
+  std::vector<float> video_fps_list = inputs.get_video_fps(MMType::VIDEO);
+
   if (images.empty() && videos.empty()) {
     LOG(ERROR) << "no image/video tensor found.";
     return false;
@@ -97,7 +98,7 @@ bool Qwen2VLImageProcessor::process(const MMInput& inputs, MMData& datas) {
 
   // 仅视频
   if (images.empty() && !videos.empty()) {
-    return this->process_videos(videos, datas);
+    return this->process_videos(videos, video_fps_list, datas);
   }
   // MMData img_data, vid_data;
   //   if (!this->process_images(images, img_data)) return false;
@@ -209,6 +210,7 @@ bool Qwen2VLImageProcessor::process_image(
 }
 
 bool Qwen2VLImageProcessor::process_videos(std::vector<torch::Tensor> videos,
+                                           std::vector<float> video_fps_list,
                                            MMData& mm_datas) {
   std::vector<torch::Tensor> pixel_values;
   std::vector<int64_t> grids;
@@ -219,19 +221,34 @@ bool Qwen2VLImageProcessor::process_videos(std::vector<torch::Tensor> videos,
     }
   }
 
+  std::vector<torch::Tensor> sec_list;
+  int idx = 0;
+  for (size_t i = 0; i < videos.size(); ++i) {
+    int64_t grid_t = grids[idx];  // 每个视频的 grid_t
+    idx += 3;
+    float fps = video_fps_list[i];
+    float seconds_per_grid = temporal_patch_size_ / std::max(fps, 1e-6f);
+    sec_list.emplace_back(
+        torch::full({grid_t}, seconds_per_grid, torch::kFloat32));
+  }
+
   auto values = torch::cat(pixel_values);  // [sum(Nv), C*Tps*P*P]
-  auto thw = torch::tensor(grids).clone().reshape({-1, 3});  // [Nv, 3]
+  auto thw = torch::tensor(grids);
+  thw = thw.clone().reshape({-1, 3});
+  auto second_per_grid_ts = torch::cat(sec_list);
 
   mm_datas = MMData(MMType::VIDEO,
-                    {{"image_grid_thw", thw}, {"pixel_values", values}});
+                    {{"video_grid_thw", thw},
+                     {"pixel_values_videos", values},
+                     {"second_per_grid_ts", second_per_grid_ts}});
   return true;
 }
 
 bool Qwen2VLImageProcessor::process_video(
     torch::Tensor video,  // [T, C, H, W], dtype = uint8 or float
-    std::vector<torch::Tensor>& pixel_values,  // push 一个视频的所有 patch
-    std::vector<int64_t>& grids) {             // push [grid_t, grid_h, grid_w]
-  // 校验形状
+    std::vector<torch::Tensor>& pixel_values,  // 一个视频的所有 patch
+    std::vector<int64_t>& grids) {             // [grid_t, grid_h, grid_w]
+
   TORCH_CHECK(video.dim() == 4, "video must be TCHW");
   auto sizes = video.sizes();
   int64_t T = sizes[0];
@@ -239,7 +256,6 @@ bool Qwen2VLImageProcessor::process_video(
   int64_t H = sizes[2];
   int64_t W = sizes[3];
 
-  // 1) smart_resize：得到目标尺寸
   int64_t resized_h = H, resized_w = W;
   if (do_resize_) {
     auto size = smart_resize(H,
@@ -247,35 +263,39 @@ bool Qwen2VLImageProcessor::process_video(
                              patch_size_ * merge_size_,  // factor
                              size_["shortest_edge"],     // min edge
                              size_["longest_edge"]);     // max edge
-    if (!size) return false;
+    if (!size) {
+      return false;
+    }
     std::tie(resized_h, resized_w) = *size;
   }
 
-  // 2) 统一 resize 所有帧（BICUBIC + antialias）
-  //    将 [T, C, H, W] 当成 batch 维度 T 的 NCHW 做插值
-  if (do_resize_ && (resized_h != H || resized_w != W)) {
-    using F = torch::nn::functional::InterpolateFuncOptions;
-    video = torch::nn::functional::interpolate(
-        video,
-        F().size(std::vector<int64_t>{resized_h, resized_w})
-            .mode(torch::kBicubic)
-            .align_corners(false)
-            .antialias(true));
+  std::vector<torch::Tensor> out_frames;
+  out_frames.reserve(T);
+  // for each frame
+  for (int64_t t = 0; t < T; ++t) {
+    auto frame = video.index({t});
+    // resize
+    if (do_resize_) {
+      auto options = torch::nn::functional::InterpolateFuncOptions()
+                         .size(std::vector<int64_t>{resized_h, resized_w})
+                         .mode(torch::kBicubic)
+                         .align_corners(false)
+                         .antialias(true);
+      frame = frame.unsqueeze(0);
+      frame = torch::nn::functional::interpolate(frame, options);
+      frame = frame.squeeze(0);
+    }
+    if (!video.is_floating_point()) {
+      frame = frame.to(torch::kFloat);
+    }
+    // normalize
+    if (do_normalize_) frame = normalize(frame, image_mean_, image_std_);
+    // rescale
+    if (do_rescale_) frame = rescale(frame, rescale_factor_);
+    out_frames.push_back(frame);
   }
+  video = torch::stack(out_frames);  // [T,C,H,W]
 
-  // 3) 归一化 / 缩放（与图片保持一致）
-  //    若输入是 uint8，先转 float
-  if (!video.is_floating_point()) {
-    video = video.to(torch::kFloat);
-  }
-  if (do_normalize_) {
-    video = this->normalize(video, image_mean_, image_std_);  // 逐通道
-  }
-  if (do_rescale_) {
-    video = this->rescale(video, rescale_factor_);  // e.g., 1/255
-  }
-
-  // 4) 时间维补齐到 temporal_patch_size_ 的倍数（重复最后一帧）
   const int64_t tps = temporal_patch_size_;
   int64_t T_pad = ceil_to_multiple(T, tps);
   if (T_pad > T) {
@@ -285,21 +305,15 @@ bool Qwen2VLImageProcessor::process_video(
     T = T_pad;
   }
 
-  // 5) 切块（严格对应你 process_image 的张量变换）
-  // grid 尺寸（空间）
   TORCH_CHECK(resized_h % patch_size_ == 0 && resized_w % patch_size_ == 0,
               "H/W must be divisible by patch_size");
   int64_t grid_h = resized_h / patch_size_;
   int64_t grid_w = resized_w / patch_size_;
 
-  // grid 尺寸（时间）
   TORCH_CHECK(T % tps == 0, "T must be divisible by temporal_patch_size_");
   int64_t grid_t = T / tps;
 
-  // reshape / permute / flatten
-  // 目标： [grid_t * grid_h * grid_w, C * tps * P * P]
-  // 步骤与 process_image 完全一致，只是把原先的 repeats 换成真实帧
-  video = video.contiguous();  // 之后的 view/permute 更安全
+  video = video.contiguous();
   auto P = patch_size_;
   auto M = merge_size_;
 
@@ -307,15 +321,13 @@ bool Qwen2VLImageProcessor::process_video(
   auto reshaped =
       video.view({grid_t, tps, C, grid_h / M, M, P, grid_w / M, M, P});
 
-  // permute 次序与图片版保持一致：
   // {0, 3, 6, 4, 7, 2, 1, 5, 8}
   // → t, (gh/M), (gw/M), M, M, C, tps, P, P
   auto perm = reshaped.permute({0, 3, 6, 4, 7, 2, 1, 5, 8});
 
-  // 展平： [grid_t * grid_h * grid_w, C * tps * P * P]
+  // [grid_t * grid_h * grid_w, C * tps * P * P]
   auto patches = perm.reshape({grid_t * grid_h * grid_w, C * tps * P * P});
 
-  // 6) 记录输出
   pixel_values.emplace_back(patches);  // 一个视频的所有 patch
   grids.insert(grids.end(), {grid_t, grid_h, grid_w});
   return true;

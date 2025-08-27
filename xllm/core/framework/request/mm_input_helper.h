@@ -44,6 +44,16 @@ struct MMInput {
     }
     return std::move(vec);
   }
+  std::vector<float> get_video_fps(MMType type) const {
+    std::vector<float> vec;
+
+    for (const auto& item : items_) {
+      if (item.type_ == type) {
+        vec.emplace_back(item.fps_);
+      }
+    }
+    return std::move(vec);
+  }
 
   MMInputItemVec items_;
 };
