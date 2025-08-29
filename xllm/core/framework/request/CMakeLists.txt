@@ -45,3 +45,4 @@ cc_library(
     torch
 )
 
+target_link_libraries(request PRIVATE ${OpenCV_LIBS})
