@@ -1,10 +1,67 @@
 #include "mm_input_helper.h"
 
+#include <libavformat/avformat.h>
+
 #include <opencv2/opencv.hpp>
 
 #include "butil/base64.h"
 
 namespace xllm {
+
+int FRAME_FACTOR = 2;
+double FPS_DEFAULT = 2.0;
+int FPS_MIN_FRAMES = 4;
+int FPS_MAX_FRAMES = 768;
+
+static inline int floor_by_factor(double x, int k) {
+  return static_cast<int>(std::floor(x / k)) * k;
+}
+
+static inline int ceil_by_factor(double x, int k) {
+  return static_cast<int>(std::ceil(x / k)) * k;
+}
+
+double get_avg_fps(cv::VideoCapture& cap, int64_t total_frames) {
+  // 取首帧时间戳
+  cap.set(cv::CAP_PROP_POS_FRAMES, 0);
+  cv::Mat tmp;
+  cap.read(tmp);
+  double start_ms = cap.get(cv::CAP_PROP_POS_MSEC);  // 常见是 0，也可能不是
+
+  // 取最后一帧“真正读到那一帧后的”时间戳
+  int64_t last = total_frames - 1;
+  cap.set(cv::CAP_PROP_POS_FRAMES, (double)last);
+  cap.read(tmp);  // 必须 read 一下，很多实现只有 read 后 POS_MSEC 才更新
+  double end_ms = cap.get(cv::CAP_PROP_POS_MSEC);
+
+  // 复位
+  cap.set(cv::CAP_PROP_POS_FRAMES, 0);
+
+  // 时长 = 最后一帧时间戳 - 第一帧时间戳
+  double duration_s = std::max(1e-6, (end_ms - start_ms) / 1000.0);
+  LOG(INFO) << start_ms << "," << end_ms << "," << duration_s << ","
+            << (double)(total_frames - 1) / duration_s;
+  // 间隔数 = total_frames - 1（不是 total_frames）
+  return (double)(total_frames - 1) / duration_s;
+}
+
+static int smart_nframes(int total_frames, double video_fps) {
+  int minf = ceil_by_factor(FPS_MIN_FRAMES, FRAME_FACTOR);
+  int maxf =
+      floor_by_factor(std::min(FPS_MAX_FRAMES, total_frames), FRAME_FACTOR);
+  double vf =
+      (video_fps > 0.0 && !std::isnan(video_fps)) ? video_fps : FPS_DEFAULT;
+  double nf_d = (double)total_frames / std::max(vf, 1e-6) * FPS_DEFAULT;
+  double clamped = std::min(std::max(nf_d, (double)minf), (double)maxf);
+  int nf = floor_by_factor((int)std::floor(clamped), FRAME_FACTOR);
+
+  if (nf > total_frames) {
+    LOG(FATAL) << "smart_nframes: nframes[" << nf << "] > total_frames["
+               << total_frames << "]";
+  }
+
+  return nf;
+}
 
 class OpenCVImageDecoder {
  public:
@@ -31,7 +88,6 @@ class OpenCVVideoDecoder {
   bool decode_from_bytes(const std::string& raw_data,
                          std::vector<torch::Tensor>& frames,
                          float& fps_out) {
-    // 1) 将 raw bytes 落盘为临时文件（cv::VideoCapture 不支持直接从内存解码）
     std::string tmp_path;
     if (!write_to_temp_file(raw_data, tmp_path)) {
       LOG(ERROR) << "write_to_temp_file failed";
@@ -40,12 +96,10 @@ class OpenCVVideoDecoder {
 
     bool ok = decode_from_file(tmp_path, frames, fps_out);
 
-    // 清理临时文件
     std::remove(tmp_path.c_str());
     return ok;
   }
 
-  // 从本地文件路径解码
   bool decode_from_file(const std::string& path,
                         std::vector<torch::Tensor>& frames,
                         float& fps_out) {
@@ -54,11 +108,6 @@ class OpenCVVideoDecoder {
       LOG(ERROR) << "OpenCVVideoDecoder open failed: " << path;
       return false;
     }
-
-    // 读取 FPS（可能为 0/NaN）
-    double fps = cap.get(cv::CAP_PROP_FPS);
-    if (!(fps > 0.0) || std::isnan(fps)) fps = 2.0;  // 与Python 侧默认一致
-    fps_out = static_cast<float>(fps);
 
     frames.clear();
     cv::Mat bgr;
@@ -69,10 +118,9 @@ class OpenCVVideoDecoder {
       cv::Mat rgb;
       cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB);
 
-      // [H, W, 3] → [C, H, W]，uint8；clone 以拥有数据
       torch::Tensor t =
           torch::from_blob(rgb.data, {rgb.rows, rgb.cols, 3}, torch::kUInt8)
-              .permute({2, 0, 1})  // [3, H, W]
+              .permute({2, 0, 1})  // [C, H, W]
               .clone();
 
       frames.emplace_back(std::move(t));
@@ -82,18 +130,53 @@ class OpenCVVideoDecoder {
       LOG(ERROR) << "OpenCVVideoDecoder got 0 frame: " << path;
       return false;
     }
+
+    int total_frames = (int)frames.size();
+
+    double vf = get_avg_fps(cap, total_frames);
+    if (!(vf > 0.0) || std::isnan(vf)) vf = FPS_DEFAULT;
+
+    LOG(INFO) << "total_frames=" << total_frames
+              << ", video_fps=" << (double)vf;
+
+    int nframes_len = smart_nframes(total_frames, vf);
+    auto idx =
+        torch::linspace(
+            0, total_frames - 1, nframes_len, torch::dtype(torch::kFloat32))
+            .round()
+            .to(torch::kLong)
+            .to(torch::kCPU)
+            .contiguous();
+
+    const int64_t* ip = idx.data_ptr<int64_t>();
+    std::vector<torch::Tensor> picked;
+    picked.reserve(nframes_len);
+    for (int j = 0; j < nframes_len; ++j) {
+      size_t k = static_cast<size_t>(ip[j]);
+      picked.emplace_back(std::move(frames[k]));
+    }
+    frames.swap(picked);
+
+    double sample_fps = static_cast<double>(nframes_len) /
+                        std::max(1e-6, static_cast<double>(total_frames)) * vf;
+    LOG(INFO) << "nframes:" << nframes_len << ", video.shape: ["
+              << frames.size() << ", "
+              << (frames.empty() ? 0 : frames[0].size(0)) << ", "
+              << (frames.empty() ? 0 : frames[0].size(1)) << ", "
+              << (frames.empty() ? 0 : frames[0].size(2)) << "]"
+              << ", sample_fps=" << sample_fps;
+
+    fps_out = (float)sample_fps;
+
     return true;
   }
 
  private:
   bool write_to_temp_file(const std::string& data, std::string& out_path) {
-    // 用 mkstemp 生成安全的临时文件
-    char tmpl[] =
-        "/export/home/wangziyue.28/test/temp/xllm_video_XXXXXX.mp4";  // 后缀仅用于提示；容器里一般也能解
+    char tmpl[] = "/export/home/wangziyue.28/test/temp/xllm_video_XXXXXX.mp4";
     int fd = mkstemps(tmpl, 4 /*“.mp4”长度*/);
     if (fd == -1) return false;
 
-    // 写入字节
     FILE* f = fdopen(fd, "wb");
     if (!f) {
       close(fd);

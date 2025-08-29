@@ -1,5 +1,6 @@
 #include "qwen2_vl_image_processor.h"
 
+#include "save_npy.h"
 namespace xllm {
 
 namespace {
@@ -86,7 +87,7 @@ bool Qwen2VLImageProcessor::process(const MMInput& inputs, MMData& datas) {
   std::vector<torch::Tensor> videos = inputs.get_decode_data(MMType::VIDEO);
   std::vector<float> video_fps_list = inputs.get_video_fps(MMType::VIDEO);
 
-  if (images.empty() && videos.empty()) {
+  if (images.empty() && (videos.empty() || video_fps_list.empty())) {
     LOG(ERROR) << "no image/video tensor found.";
     return false;
   }
@@ -224,7 +225,7 @@ bool Qwen2VLImageProcessor::process_videos(std::vector<torch::Tensor> videos,
   std::vector<torch::Tensor> sec_list;
   int idx = 0;
   for (size_t i = 0; i < videos.size(); ++i) {
-    int64_t grid_t = grids[idx];  // 每个视频的 grid_t
+    auto grid_t = grids[idx];
     idx += 3;
     float fps = video_fps_list[i];
     float seconds_per_grid = temporal_patch_size_ / std::max(fps, 1e-6f);
@@ -232,7 +233,7 @@ bool Qwen2VLImageProcessor::process_videos(std::vector<torch::Tensor> videos,
         torch::full({grid_t}, seconds_per_grid, torch::kFloat32));
   }
 
-  auto values = torch::cat(pixel_values);  // [sum(Nv), C*Tps*P*P]
+  auto values = torch::cat(pixel_values);
   auto thw = torch::tensor(grids);
   thw = thw.clone().reshape({-1, 3});
   auto second_per_grid_ts = torch::cat(sec_list);
@@ -245,90 +246,102 @@ bool Qwen2VLImageProcessor::process_videos(std::vector<torch::Tensor> videos,
 }
 
 bool Qwen2VLImageProcessor::process_video(
-    torch::Tensor video,  // [T, C, H, W], dtype = uint8 or float
-    std::vector<torch::Tensor>& pixel_values,  // 一个视频的所有 patch
-    std::vector<int64_t>& grids) {             // [grid_t, grid_h, grid_w]
+    torch::Tensor video,
+    std::vector<torch::Tensor>& pixel_values,
+    std::vector<int64_t>& grids) {
+  if (video.dim() != 4) {
+    LOG(FATAL) << "video must be TCHW";
+  }
 
-  TORCH_CHECK(video.dim() == 4, "video must be TCHW");
-  auto sizes = video.sizes();
-  int64_t T = sizes[0];
-  int64_t C = sizes[1];
-  int64_t H = sizes[2];
-  int64_t W = sizes[3];
+  auto shape = video.sizes();
+  auto time_len = shape[0];
+  auto channel = shape[1];
+  auto resized_height = shape[2];
+  auto resized_width = shape[3];
 
-  int64_t resized_h = H, resized_w = W;
+  int min_pixels = 128 * 28 * 28;
+  int total_pixels = 128000 * 28 * 28 * 0.9;
+  int max_pixels =
+      std::max(std::min(768 * 28 * 28, int(total_pixels / time_len * 2)),
+               int(min_pixels * 1.05));
+
   if (do_resize_) {
-    auto size = smart_resize(H,
-                             W,
-                             patch_size_ * merge_size_,  // factor
-                             size_["shortest_edge"],     // min edge
-                             size_["longest_edge"]);     // max edge
+    LOG(INFO) << "min_pixels:" << min_pixels << ",maxpixels:" << max_pixels;
+    auto size = smart_resize(resized_height,
+                             resized_width,
+                             patch_size_ * merge_size_,
+                             min_pixels,
+                             max_pixels);
     if (!size) {
       return false;
     }
-    std::tie(resized_h, resized_w) = *size;
+    std::tie(resized_height, resized_width) = *size;
   }
 
   std::vector<torch::Tensor> out_frames;
-  out_frames.reserve(T);
+  out_frames.reserve(time_len);
   // for each frame
-  for (int64_t t = 0; t < T; ++t) {
-    auto frame = video.index({t});
+  auto frames = video.unbind(0);
+  for (auto& frame : frames) {
     // resize
     if (do_resize_) {
-      auto options = torch::nn::functional::InterpolateFuncOptions()
-                         .size(std::vector<int64_t>{resized_h, resized_w})
-                         .mode(torch::kBicubic)
-                         .align_corners(false)
-                         .antialias(true);
+      frame = frame.to(torch::kFloat);
+      auto options =
+          torch::nn::functional::InterpolateFuncOptions()
+              .size(std::vector<int64_t>{resized_height, resized_width})
+              .mode(torch::kBicubic)
+              .align_corners(false)
+              .antialias(true);
       frame = frame.unsqueeze(0);
       frame = torch::nn::functional::interpolate(frame, options);
+      frame = frame.round().clamp(0.0, 255.0).to(torch::kUInt8);
       frame = frame.squeeze(0);
     }
-    if (!video.is_floating_point()) {
-      frame = frame.to(torch::kFloat);
-    }
-    // normalize
-    if (do_normalize_) frame = normalize(frame, image_mean_, image_std_);
-    // rescale
-    if (do_rescale_) frame = rescale(frame, rescale_factor_);
+    // // normalize
+    // if (do_normalize_) frame = normalize(frame, image_mean_, image_std_);
+    // // rescale
+    // if (do_rescale_) frame = rescale(frame, rescale_factor_);
     out_frames.push_back(frame);
   }
+
   video = torch::stack(out_frames);  // [T,C,H,W]
 
-  const int64_t tps = temporal_patch_size_;
-  int64_t T_pad = ceil_to_multiple(T, tps);
-  if (T_pad > T) {
-    auto last = video.index({T - 1}).unsqueeze(0);    // [1, C, H, W]
-    auto repeat = last.repeat({T_pad - T, 1, 1, 1});  // [T_pad-T, C, H, W]
-    video = torch::cat({video, repeat}, /*dim=*/0);   // [T_pad, C, H, W]
-    T = T_pad;
+  save_tensor_to_npy(
+      "/export/home/wangziyue.28/test/models/Qwen2.5-VL-7B-Instruct/"
+      "cpp_final_frame.npy",
+      video.to(torch::kFloat));
+
+  auto pad_t = (temporal_patch_size_ - (time_len % temporal_patch_size_)) %
+               temporal_patch_size_;
+  if (pad_t > 0) {
+    auto last =
+        video.index({time_len - 1}).unsqueeze(0).repeat({pad_t, 1, 1, 1});
+    video = torch::cat({video, last}, 0);
   }
 
-  TORCH_CHECK(resized_h % patch_size_ == 0 && resized_w % patch_size_ == 0,
-              "H/W must be divisible by patch_size");
-  int64_t grid_h = resized_h / patch_size_;
-  int64_t grid_w = resized_w / patch_size_;
-
-  TORCH_CHECK(T % tps == 0, "T must be divisible by temporal_patch_size_");
-  int64_t grid_t = T / tps;
+  shape = video.sizes();
+  auto grid_h = resized_height / patch_size_;
+  auto grid_w = resized_width / patch_size_;
+  auto grid_t = shape[0] / temporal_patch_size_;
 
   video = video.contiguous();
-  auto P = patch_size_;
-  auto M = merge_size_;
 
-  // [T, C, H, W] → [grid_t, tps, C, (grid_h/M), M, P, (grid_w/M), M, P]
-  auto reshaped =
-      video.view({grid_t, tps, C, grid_h / M, M, P, grid_w / M, M, P});
+  auto patches = video.view({grid_t,
+                             temporal_patch_size_,
+                             channel,
+                             grid_h / merge_size_,
+                             merge_size_,
+                             patch_size_,
+                             grid_w / merge_size_,
+                             merge_size_,
+                             patch_size_});
 
-  // {0, 3, 6, 4, 7, 2, 1, 5, 8}
-  // → t, (gh/M), (gw/M), M, M, C, tps, P, P
-  auto perm = reshaped.permute({0, 3, 6, 4, 7, 2, 1, 5, 8});
+  patches = patches.permute({0, 3, 6, 4, 7, 2, 1, 5, 8});
+  patches = patches.reshape(
+      {grid_t * grid_h * grid_w,
+       channel * temporal_patch_size_ * patch_size_ * patch_size_});
 
-  // [grid_t * grid_h * grid_w, C * tps * P * P]
-  auto patches = perm.reshape({grid_t * grid_h * grid_w, C * tps * P * P});
-
-  pixel_values.emplace_back(patches);  // 一个视频的所有 patch
+  pixel_values.emplace_back(patches);
   grids.insert(grids.end(), {grid_t, grid_h, grid_w});
   return true;
 }
