@@ -131,4 +131,93 @@ torch::Tensor ImageProcessor::normalize(const torch::Tensor& image,
   return result.div_(s_tensor);
 }
 
+torch::Tensor ImageProcessor::init_frames(const torch::Tensor& video) {
+  // linspace
+  auto video_frames = video.unbind(0);
+  int total_num_frames = static_cast<int>(video_frames.size());
+  int nframes_len = 32;
+  auto idx = torch::linspace(0,
+                             static_cast<double>(total_num_frames - 1),
+                             nframes_len,
+                             torch::dtype(torch::kFloat32))
+                 .round()
+                 .to(torch::kLong)
+                 .contiguous();
+  const int64_t* idx_ptr = idx.data_ptr<int64_t>();
+  std::vector<torch::Tensor> picked_frames;
+  picked_frames.reserve(nframes_len);
+  for (int i = 0; i < nframes_len; ++i) {
+    int64_t k = static_cast<int64_t>(idx_ptr[i]);
+    picked_frames.emplace_back(video_frames[k]);
+  }
+  video_frames = std::move(picked_frames);
+  return torch::stack(video_frames, 0);
+}
+
+torch::Tensor ImageProcessor::sample_frames(const torch::Tensor& video,
+                                            double video_fps,
+                                            int temporal_patch_size,
+                                            int min_frames,
+                                            int max_frames,
+                                            int num_frames,
+                                            double set_fps) {
+  auto video_frames = video.unbind(0);
+
+  if (set_fps > 0.0 && num_frames > 0) {
+    LOG(FATAL) << "num_frames and fps are mutually exclusive arguments, please "
+                  "use only one!";
+  }
+
+  double fps = set_fps;
+
+  int total_num_frames = static_cast<int>(video_frames.size());
+
+  if (num_frames > 0) {
+    double double_num_frames =
+        std::round(static_cast<double>(num_frames) / temporal_patch_size) *
+        temporal_patch_size;
+    num_frames = static_cast<int>(double_num_frames);
+  } else if (fps > 0.0) {
+    if (video_fps <= 0.0) {
+      LOG(FATAL)
+          << "Asked to sample `fps` frames per second but no video metadata "
+             "was provided which is required when sampling with `fps`. ";
+    }
+
+    max_frames =
+        (std::min(max_frames, total_num_frames) / temporal_patch_size) *
+        temporal_patch_size;
+    double double_num_frames =
+        static_cast<double>(total_num_frames) / video_fps * fps;
+    double_num_frames = std::min(
+        std::min(std::max(double_num_frames, static_cast<double>(min_frames)),
+                 static_cast<double>(max_frames)),
+        static_cast<double>(total_num_frames));
+    double_num_frames = std::floor(double_num_frames / temporal_patch_size) *
+                        temporal_patch_size;
+
+    num_frames = static_cast<int>(double_num_frames);
+  }
+
+  if (num_frames > total_num_frames) {
+    LOG(FATAL) << "Video can't be sampled. The inferred num_frames="
+               << num_frames << " exceeds total_num_frames=" << total_num_frames
+               << ".";
+  }
+
+  if (num_frames > 0) {
+    std::vector<torch::Tensor> picked_frames;
+    picked_frames.reserve(num_frames);
+    for (int i = 0; i < num_frames; ++i) {
+      int64_t k = static_cast<int64_t>(
+          (static_cast<int64_t>(i) * total_num_frames) / num_frames);
+      if (k >= total_num_frames) k = total_num_frames - 1;
+      picked_frames.push_back(video_frames[k]);
+    }
+    return torch::stack(picked_frames, 0);
+  } else {
+    return video;
+  }
+}
+
 }  // namespace xllm
