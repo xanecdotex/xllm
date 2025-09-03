@@ -131,6 +131,78 @@ class FileDownloadHelper {
       channels_;
 };
 
+class OpenCVVideoDecoder {
+ public:
+  bool decode_from_bytes(const std::string& raw_data,
+                         torch::Tensor& t,
+                         double& fps) {
+    std::string tmp_path;
+    if (!write_to_temp_file(raw_data, tmp_path)) {
+      return false;
+    }
+
+    bool success = decode_from_file(tmp_path, t, fps);
+
+    // remove temp video file
+    // std::remove(tmp_path.c_str());
+    return success;
+  }
+
+  bool decode_from_file(const std::string& path,
+                        torch::Tensor& t,
+                        double& fps) {
+    cv::VideoCapture cap;
+    if (!cap.open(path)) {
+      LOG(INFO) << "opencv video decode failed";
+      return false;
+    }
+    double video_fps = cap.get(cv::CAP_PROP_FPS);
+
+    std::vector<torch::Tensor> frames;
+    int est = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_COUNT));
+    frames.reserve(est + 1);
+
+    cv::Mat image;
+    while (cap.read(image)) {
+      if (image.empty()) break;
+      cv::cvtColor(image, image, cv::COLOR_BGR2RGB);  // RGB
+      torch::Tensor tensor = torch::from_blob(
+          image.data, {image.rows, image.cols, 3}, torch::kUInt8);
+      torch::Tensor frame = tensor.permute({2, 0, 1}).clone();  // [C, H, W]
+      frames.emplace_back(frame);
+    }
+
+    if (frames.empty()) {
+      LOG(INFO) << "opencv video decode got 0 frame";
+      return false;
+    }
+
+    t = torch::stack(frames, 0);  // [T,C,H,W]
+    fps = video_fps;
+    return true;
+  }
+
+ private:
+  bool write_to_temp_file(const std::string& data, std::string& out_path) {
+    char tmpl[] = "./video_XXXXXX.mp4";
+    int fd = mkstemps(tmpl, 4);
+    if (fd == -1) return false;
+
+    FILE* f = fdopen(fd, "wb");
+    if (!f) {
+      close(fd);
+      return false;
+    }
+    size_t written = fwrite(data.data(), 1, data.size(), f);
+    fflush(f);
+    fclose(f);
+
+    if (written != data.size()) return false;
+    out_path.assign(tmpl);
+    return true;
+  }
+};
+
 class Handler {
  public:
   bool process(const proto::MMInputData& msg, MMInputItem& input) {
@@ -201,13 +273,62 @@ class ImageHandler : public Handler {
     OpenCVImageDecoder decoder;
     return decoder.decode(input.raw_data_, input.decode_data_);
   }
+
+ private:
+  const std::string dataurl_prefix_;
+};
+
+class VideoHandler : public Handler {
+ public:
+  VideoHandler()
+      : dataurl_prefix_("data:video"),
+        http_prefix1_("http://"),
+        http_prefix2_("https://") {}
+
+  bool load(const proto::MMInputData& msg, MMInputItem& input) override {
+    input.clear();
+
+    const auto& video_url = msg.video_url();
+    const auto& url = video_url.url();
+
+    input.type_ = MMType::VIDEO;
+
+    if (url.compare(0, dataurl_prefix_.size(), dataurl_prefix_) == 0) {
+      return this->load_from_dataurl(url, input.raw_data_);
+    } else if (url.compare(0, http_prefix1_.size(), http_prefix1_) == 0 ||
+               url.compare(0, http_prefix2_.size(), http_prefix2_) == 0) {
+      return this->load_from_http(url, input.path_);
+    } else if (!url.empty()) {
+      return this->load_from_local(url, input.path_);
+    } else {
+      return false;
+    }
+  }
+
+  bool decode(MMInputItem& input) override {
+    OpenCVVideoDecoder decoder;
+    if (!input.raw_data_.empty()) {
+      return decoder.decode_from_bytes(
+          input.raw_data_, input.decode_data_, input.fps_);
+    } else if (!input.path_.empty()) {
+      return decoder.decode_from_file(
+          input.path_, input.decode_data_, input.fps_);
+    } else {
+      LOG(INFO) << "VideoHandler decode failed";
+      return false;
+    }
+  }
+
+ private:
+  const std::string dataurl_prefix_;
+  const std::string http_prefix1_, http_prefix2_;
 };
 
 class MMHandlerSet {
  public:
   MMHandlerSet() {
     handlers_["image_url"] = std::make_unique<ImageHandler>();
-    // handlers_["video_url"] = std::make_unique<VideoHandler>();
+    handlers_["video_url"] = std::make_unique<VideoHandler>();
     // handlers_["audio_url"] = std::make_unique<AudioHandler>();
   }
 

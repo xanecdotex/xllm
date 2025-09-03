@@ -20,6 +20,7 @@ namespace xllm {
 namespace {
 
 using Size = std::pair<int, int>;
+
 std::optional<Size> smart_resize(int height,
                                  int width,
                                  int factor = 28,
@@ -78,6 +79,9 @@ Qwen2VLImageProcessor::Qwen2VLImageProcessor(const ModelArgs& args) {
   merge_size_ = args.mm_image_merge_size();
   size_ = {{"longest_edge", 12845056}, {"shortest_edge", 3136}};
 
+  min_frames_ = args.mm_video_min_frames();
+  max_frames_ = args.mm_video_max_frames();
+
   // fuse image mean/std and rescale_factor
   if (do_rescale_ && do_normalize_) {
     for (auto& item : image_mean_) {
@@ -94,14 +98,26 @@ Qwen2VLImageProcessor::Qwen2VLImageProcessor(const ModelArgs& args) {
 
 bool Qwen2VLImageProcessor::process(const MMInput& inputs, MMData& datas) {
   std::vector<torch::Tensor> images = inputs.get_decode_data(MMType::IMAGE);
-  if (images.empty()) {
-    LOG(ERROR) << " image tensor not found.";
+  std::vector<torch::Tensor> videos = inputs.get_decode_data(MMType::VIDEO);
+  std::vector<double> video_fps_list = inputs.get_video_fps(MMType::VIDEO);
+
+  if (images.empty() && (videos.empty() || video_fps_list.empty())) {
+    LOG(ERROR) << "no image/video tensor found.";
     return false;
   }
 
-  if (!this->process_images(images, datas)) {
-    LOG(ERROR) << " process image failed.";
-    return false;
+  if (!images.empty() && videos.empty()) {
+    if (!this->process_images(images, datas)) {
+      LOG(ERROR) << " process image failed.";
+      return false;
+    }
+  }
+
+  if (images.empty() && !videos.empty()) {
+    if (!this->process_videos(videos, video_fps_list, datas)) {
+      LOG(ERROR) << " process video failed.";
+      return false;
+    }
   }
 
   return true;
@@ -195,6 +211,130 @@ bool Qwen2VLImageProcessor::process_image(
   pixel_values.emplace_back(patches);
   grids.insert(grids.end(), {grid_t, grid_h, grid_w});
 
+  return true;
+}
+
+bool Qwen2VLImageProcessor::process_videos(std::vector<torch::Tensor> videos,
+                                           std::vector<double> video_fps_list,
+                                           MMData& mm_datas) {
+  std::vector<torch::Tensor> pixel_values;
+  std::vector<int64_t> grids;
+
+  const size_t video_size = videos.size();
+  for (size_t i = 0; i < video_size; ++i) {
+    auto& vid = videos[i];
+    double fps = video_fps_list[i];
+    if (!this->process_video(vid, fps, pixel_values, grids)) {
+      return false;
+    }
+  }
+
+  auto values = torch::cat(pixel_values);
+  auto thw = torch::tensor(grids).clone().reshape({-1, 3});
+  const size_t num_videos = videos.size();
+
+  std::vector<double> second_per_grid;
+  second_per_grid.reserve(num_videos);
+  for (size_t i = 0; i < num_videos; ++i) {
+    double fps = 2.0;
+    double seconds_per_grid = static_cast<double>(temporal_patch_size_ / fps);
+    second_per_grid.push_back(seconds_per_grid);
+  }
+  auto opts = torch::TensorOptions().dtype(torch::kFloat32);
+  auto second_per_grid_ts =
+      torch::tensor(second_per_grid, opts);  // [num_videos]
+
+  mm_datas = MMData(MMType::VIDEO,
+                    {{"video_grid_thw", thw},
+                     {"pixel_values_videos", values},
+                     {"second_per_grid_ts", second_per_grid_ts}});
+  return true;
+}
+
+bool Qwen2VLImageProcessor::process_video(
+    torch::Tensor origin_video,
+    double fps,
+    std::vector<torch::Tensor>& pixel_values,
+    std::vector<int64_t>& grids) {
+  if (origin_video.dim() != 4) {
+    LOG(FATAL) << "video must be TCHW";
+  }
+  torch::Tensor video =
+      this->init_frames(origin_video);  // default sample to 32 frames
+
+  if (do_sample_frame_) {
+    torch::Tensor video = this->sample_frames(
+        origin_video, fps, temporal_patch_size_, min_frames_, max_frames_);
+  }
+
+  auto shape = video.sizes();
+  auto time_len = shape[0];
+  auto channel = shape[1];
+  auto resized_height = shape[2];
+  auto resized_width = shape[3];
+
+  if (do_resize_) {
+    auto size = smart_resize(resized_height,
+                             resized_width,
+                             patch_size_ * merge_size_,
+                             size_["shortest_edge"],
+                             size_["longest_edge"]);
+    if (!size) {
+      return false;
+    }
+    std::tie(resized_height, resized_width) = *size;
+  }
+
+  std::vector<torch::Tensor> out_frames;
+  out_frames.reserve(time_len);
+  // for each frame
+  auto frames = video.unbind(0);
+  for (auto& frame : frames) {
+    // resize
+    if (do_resize_)
+      frame =
+          this->resize(frame, {resized_height, resized_width}, resample_, true);
+    // normalize
+    if (do_normalize_) frame = this->normalize(frame, image_mean_, image_std_);
+    // rescale
+    if (do_rescale_) frame = this->rescale(frame, rescale_factor_);
+    out_frames.push_back(frame);
+  }
+
+  auto out_video = torch::stack(out_frames);  // [T,C,H,W]
+
+  auto pad_t = (temporal_patch_size_ - (time_len % temporal_patch_size_)) %
+               temporal_patch_size_;
+  if (pad_t > 0) {
+    auto last =
+        out_video.index({time_len - 1}).unsqueeze(0).repeat({pad_t, 1, 1, 1});
+    out_video = torch::cat({out_video, last}, 0);
+  }
+
+  shape = out_video.sizes();
+  auto grid_h = resized_height / patch_size_;
+  auto grid_w = resized_width / patch_size_;
+  auto grid_t = shape[0] / temporal_patch_size_;
+
+  out_video = out_video.contiguous();
+
+  auto patches = out_video.view({grid_t,
+                                 temporal_patch_size_,
+                                 channel,
+                                 grid_h / merge_size_,
+                                 merge_size_,
+                                 patch_size_,
+                                 grid_w / merge_size_,
+                                 merge_size_,
+                                 patch_size_});
+
+  patches = patches.permute({0, 3, 6, 4, 7, 2, 1, 5, 8});
+  patches = patches.reshape(
+      {grid_t * grid_h * grid_w,
+       channel * temporal_patch_size_ * patch_size_ * patch_size_});
+
+  pixel_values.emplace_back(patches);
+  grids.insert(grids.end(), {grid_t, grid_h, grid_w});
   return true;
 }
 

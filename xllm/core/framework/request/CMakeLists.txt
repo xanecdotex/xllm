@@ -54,7 +54,7 @@ cc_library(
     absl::strings
     absl::time
     proto::xllm_proto
-    torch
     ${OpenCV_LIBS}
+    torch
 )
 
