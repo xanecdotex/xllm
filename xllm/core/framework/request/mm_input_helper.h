@@ -35,6 +35,10 @@ struct MMInputItem {
   std::string raw_data_;  // binary
 
   torch::Tensor decode_data_;  // image: rgb, [c,h,w], uint8
+
+  double fps_;
+
+  std::string path_;
 };
 
 using MMInputItemVec = std::vector<MMInputItem>;
@@ -51,6 +55,16 @@ struct MMInput {
     for (const auto& item : items_) {
       if (item.type_ == type) {
         vec.emplace_back(item.decode_data_);
+      }
+    }
+    return std::move(vec);
+  }
+  std::vector<double> get_video_fps(MMType type) const {
+    std::vector<double> vec;
+
+    for (const auto& item : items_) {
+      if (item.type_ == type) {
+        vec.emplace_back(item.fps_);
       }
     }
     return std::move(vec);

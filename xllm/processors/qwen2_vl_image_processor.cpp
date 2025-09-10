@@ -20,6 +20,7 @@ namespace xllm {
 namespace {
 
 using Size = std::pair<int, int>;
+
 std::optional<Size> smart_resize(int height,
                                  int width,
                                  int factor = 28,
@@ -94,14 +95,26 @@ Qwen2VLImageProcessor::Qwen2VLImageProcessor(const ModelArgs& args) {
 
 bool Qwen2VLImageProcessor::process(const MMInput& inputs, MMData& datas) {
   std::vector<torch::Tensor> images = inputs.get_decode_data(MMType::IMAGE);
-  if (images.empty()) {
-    LOG(ERROR) << " image tensor not found.";
+  std::vector<torch::Tensor> videos = inputs.get_decode_data(MMType::VIDEO);
+  std::vector<double> video_fps_list = inputs.get_video_fps(MMType::VIDEO);
+
+  if (images.empty() && (videos.empty() || video_fps_list.empty())) {
+    LOG(ERROR) << "no image/video tensor found.";
     return false;
   }
 
-  if (!this->process_images(images, datas)) {
-    LOG(ERROR) << " process image failed.";
-    return false;
+  if (!images.empty() && videos.empty()) {
+    if (!this->process_images(images, datas)) {
+      LOG(ERROR) << " process image failed.";
+      return false;
+    }
+  }
+
+  if (images.empty() && !videos.empty()) {
+    if (!this->process_videos(videos, video_fps_list, datas)) {
+      LOG(ERROR) << " process video failed.";
+      return false;
+    }
   }
 
   return true;
@@ -195,6 +208,133 @@ bool Qwen2VLImageProcessor::process_image(
   pixel_values.emplace_back(patches);
   grids.insert(grids.end(), {grid_t, grid_h, grid_w});
 
+  return true;
+}
+
+bool Qwen2VLImageProcessor::process_videos(std::vector<torch::Tensor> videos,
+                                           std::vector<double> video_fps_list,
+                                           MMData& mm_datas) {
+  std::vector<torch::Tensor> pixel_values;
+  std::vector<int64_t> grids;
+
+  for (auto& vid : videos) {
+    if (!this->process_video(vid, pixel_values, grids)) {
+      return false;
+    }
+  }
+
+  auto values = torch::cat(pixel_values);
+  auto thw = torch::tensor(grids).clone().reshape({-1, 3});
+  const size_t num_videos = videos.size();
+
+  std::vector<double> second_per_grid;
+  second_per_grid.reserve(num_videos);
+  int grid_i = 0;
+  for (size_t i = 0; i < num_videos; ++i) {
+    grid_i += 3;
+    double fps = video_fps_list[i];
+    double seconds_per_grid =
+        static_cast<double>(temporal_patch_size_ / std::max(fps, 1e-6));
+    second_per_grid.push_back(seconds_per_grid);
+  }
+  auto opts = torch::TensorOptions().dtype(torch::kFloat32);
+  auto second_per_grid_ts =
+      torch::tensor(second_per_grid, opts);  // [num_videos]
+
+  mm_datas = MMData(MMType::VIDEO,
+                    {{"video_grid_thw", thw},
+                     {"pixel_values_videos", values},
+                     {"second_per_grid_ts", second_per_grid_ts}});
+  return true;
+}
+
+bool Qwen2VLImageProcessor::process_video(
+    torch::Tensor video,
+    std::vector<torch::Tensor>& pixel_values,
+    std::vector<int64_t>& grids) {
+  if (video.dim() != 4) {
+    LOG(FATAL) << "video must be TCHW";
+  }
+
+  auto shape = video.sizes();
+  auto time_len = shape[0];
+  auto channel = shape[1];
+  auto resized_height = shape[2];
+  auto resized_width = shape[3];
+
+  int min_pixels = 128 * 28 * 28;
+  int total_pixels = 128000 * 28 * 28 * 0.9;
+  int max_pixels =
+      std::max(std::min(768 * 28 * 28, int(total_pixels / time_len * 2)),
+               int(min_pixels * 1.05));
+
+  if (do_resize_) {
+    auto size = smart_resize(resized_height,
+                             resized_width,
+                             patch_size_ * merge_size_,
+                             min_pixels,
+                             max_pixels);
+    if (!size) {
+      return false;
+    }
+    std::tie(resized_height, resized_width) = *size;
+    video = video.to(torch::kFloat32);
+    auto options =
+        torch::nn::functional::InterpolateFuncOptions()
+            .size(std::vector<int64_t>{resized_height, resized_width})
+            .mode(torch::kBicubic)
+            .align_corners(false)
+            .antialias(true);
+    video = torch::nn::functional::interpolate(video, options);
+    video = video.round().clamp(0.0, 255.0).to(torch::kUInt8);
+  }
+
+  std::vector<torch::Tensor> out_frames;
+  out_frames.reserve(time_len);
+  // for each frame
+  auto frames = video.unbind(0);
+  for (auto& frame : frames) {
+    // normalize
+    if (do_normalize_) frame = normalize(frame, image_mean_, image_std_);
+    // rescale
+    if (do_rescale_) frame = rescale(frame, rescale_factor_);
+    out_frames.push_back(frame);
+  }
+
+  auto out_video = torch::stack(out_frames);  // [T,C,H,W]
+
+  auto pad_t = (temporal_patch_size_ - (time_len % temporal_patch_size_)) %
+               temporal_patch_size_;
+  if (pad_t > 0) {
+    auto last =
+        out_video.index({time_len - 1}).unsqueeze(0).repeat({pad_t, 1, 1, 1});
+    out_video = torch::cat({out_video, last}, 0);
+  }
+
+  shape = out_video.sizes();
+  auto grid_h = resized_height / patch_size_;
+  auto grid_w = resized_width / patch_size_;
+  auto grid_t = shape[0] / temporal_patch_size_;
+
+  out_video = out_video.contiguous();
+
+  auto patches = out_video.view({grid_t,
+                                 temporal_patch_size_,
+                                 channel,
+                                 grid_h / merge_size_,
+                                 merge_size_,
+                                 patch_size_,
+                                 grid_w / merge_size_,
+                                 merge_size_,
+                                 patch_size_});
+
+  patches = patches.permute({0, 3, 6, 4, 7, 2, 1, 5, 8});
+  patches = patches.reshape(
+      {grid_t * grid_h * grid_w,
+       channel * temporal_patch_size_ * patch_size_ * patch_size_});
+
+  pixel_values.emplace_back(patches);
+  grids.insert(grids.end(), {grid_t, grid_h, grid_w});
   return true;
 }
 

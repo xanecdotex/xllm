@@ -47,4 +47,5 @@ cc_library(
     torch
     ${OpenCV_LIBS}
 )
-
+target_link_libraries(request PRIVATE ${FFMPEG_LIBRARIES})
+target_link_libraries(request PRIVATE ${OpenCV_LIBS})
