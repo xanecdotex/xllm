@@ -18,12 +18,17 @@ limitations under the License.
 #include <brpc/channel.h>
 #include <brpc/controller.h>
 #include <bthread/rwlock.h>
+#include <fcntl.h>
 #include <glog/logging.h>
+#include <linux/memfd.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
+#include <fstream>
 #include <opencv2/opencv.hpp>
+#include <string>
 
 #include "butil/base64.h"
-
 namespace xllm {
 
 class OpenCVImageDecoder {
@@ -133,72 +138,72 @@ class FileDownloadHelper {
 
 class OpenCVVideoDecoder {
  public:
-  bool decode_from_bytes(const std::string& raw_data,
-                         torch::Tensor& t,
-                         double& fps) {
-    std::string tmp_path;
-    if (!write_to_temp_file(raw_data, tmp_path)) {
+  struct LocalReader : cv::IStreamReader {
+    const unsigned char* p;
+    long long n;
+    long long pos = 0;
+    LocalReader(const unsigned char* d, size_t s) : p(d), n((long long)s) {}
+    long long read(char* buf, long long sz) override {
+      if (!buf || sz <= 0) return 0;
+      long long rem = n - pos;
+      if (rem <= 0) return 0;
+      long long k = std::min(rem, sz);
+      std::memcpy(buf, p + pos, (size_t)k);
+      pos += k;
+      return k;
+    }
+    long long seek(long long off, int orig) override {
+      long long np = pos;
+      if (orig == SEEK_SET)
+        np = off;
+      else if (orig == SEEK_CUR)
+        np = pos + off;
+      else if (orig == SEEK_END)
+        np = n + off;
+      else
+        return -1;
+      if (np < 0) np = 0;
+      if (np > n) np = n;
+      pos = np;
+      return pos;
+    }
+  };
+
+  bool decode(const std::string& raw_data, torch::Tensor& t, double& fps) {
+    cv::Ptr<cv::IStreamReader> reader = cv::makePtr<LocalReader>(
+        reinterpret_cast<const unsigned char*>(raw_data.data()),
+        raw_data.size());
+
+    cv::VideoCapture cap(reader, cv::CAP_FFMPEG, std::vector<int>{});
+    if (!cap.isOpened()) {
+      LOG(INFO) << " opencv video decode failed";
       return false;
+    } else {
+      double video_fps = cap.get(cv::CAP_PROP_FPS);
+      if (video_fps <= 0 || std::isnan(video_fps)) video_fps = 30.0;
+
+      std::vector<torch::Tensor> frames;
+      int est = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_COUNT));
+      if (est < 0) est = 0;
+      frames.reserve(est + 1);
+
+      cv::Mat image;
+      while (cap.read(image)) {
+        if (image.empty()) break;
+        cv::cvtColor(image, image, cv::COLOR_BGR2RGB);
+        torch::Tensor tensor = torch::from_blob(
+            image.data, {image.rows, image.cols, 3}, torch::kUInt8);
+        frames.emplace_back(tensor.permute({2, 0, 1}).clone());
+      }
+
+      if (!frames.empty()) {
+        t = torch::stack(frames, 0);  // [T,C,H,W]
+        fps = video_fps;
+      } else {
+        LOG(INFO) << "opencv video decode got 0 frame ";
+        return false;
+      }
     }
-
-    bool success = decode_from_file(tmp_path, t, fps);
-
-    // remove temp video file
-    // std::remove(tmp_path.c_str());
-    return success;
-  }
-
-  bool decode_from_file(const std::string& path,
-                        torch::Tensor& t,
-                        double& fps) {
-    cv::VideoCapture cap;
-    if (!cap.open(path)) {
-      LOG(INFO) << "opencv video decode failed";
-      return false;
-    }
-    double video_fps = cap.get(cv::CAP_PROP_FPS);
-
-    std::vector<torch::Tensor> frames;
-    int est = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_COUNT));
-    frames.reserve(est + 1);
-
-    cv::Mat image;
-    while (cap.read(image)) {
-      if (image.empty()) break;
-      cv::cvtColor(image, image, cv::COLOR_BGR2RGB);  // RGB
-      torch::Tensor tensor = torch::from_blob(
-          image.data, {image.rows, image.cols, 3}, torch::kUInt8);
-      torch::Tensor frame = tensor.permute({2, 0, 1}).clone();  // [C, H, W]
-      frames.emplace_back(frame);
-    }
-
-    if (frames.empty()) {
-      LOG(INFO) << "opencv video decode got 0 frame";
-      return false;
-    }
-
-    t = torch::stack(frames, 0);  // [T,C,H,W]
-    fps = video_fps;
-    return true;
-  }
-
- private:
-  bool write_to_temp_file(const std::string& data, std::string& out_path) {
-    char tmpl[] = "./video_XXXXXX.mp4";
-    int fd = mkstemps(tmpl, 4);
-    if (fd == -1) return false;
-
-    FILE* f = fdopen(fd, "wb");
-    if (!f) {
-      close(fd);
-      return false;
-    }
-    size_t written = fwrite(data.data(), 1, data.size(), f);
-    fflush(f);
-    fclose(f);
-
-    if (written != data.size()) return false;
-    out_path.assign(tmpl);
     return true;
   }
 };
@@ -232,7 +237,19 @@ class Handler {
   }
 
   bool load_from_local(const std::string& url, std::string& data) {
-    return false;
+    data.clear();
+    std::string path = url;
+    if (path.rfind("file://", 0) == 0) {
+      path.erase(0, 7);
+      if (path.rfind("localhost/", 0) == 0) path.erase(0, 10);
+    } else if (path.rfind("file:", 0) == 0) {
+      path.erase(0, 5);
+    }
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    data.assign(std::istreambuf_iterator<char>(in),
+                std::istreambuf_iterator<char>());
+    return static_cast<bool>(in) || in.eof();
   }
 
   bool load_from_http(const std::string& url, std::string& data) {
@@ -297,9 +314,9 @@ class VideoHandler : public Handler {
       return this->load_from_dataurl(url, input.raw_data_);
     } else if (url.compare(0, http_prefix1_.size(), http_prefix1_) == 0 ||
                url.compare(0, http_prefix2_.size(), http_prefix2_) == 0) {
-      return this->load_from_http(url, input.path_);
+      return this->load_from_http(url, input.raw_data_);
     } else if (!url.empty()) {
-      return this->load_from_local(url, input.path_);
+      return this->load_from_local(url, input.raw_data_);
     } else {
       return false;
     }
@@ -307,16 +324,7 @@ class VideoHandler : public Handler {
 
   bool decode(MMInputItem& input) override {
     OpenCVVideoDecoder decoder;
-    if (!input.raw_data_.empty()) {
-      return decoder.decode_from_bytes(
-          input.raw_data_, input.decode_data_, input.fps_);
-    } else if (!input.path_.empty()) {
-      return decoder.decode_from_file(
-          input.path_, input.decode_data_, input.fps_);
-    } else {
-      LOG(INFO) << "VideoHandler decode failed";
-      return false;
-    }
+    return decoder.decode(input.raw_data_, input.decode_data_, input.fps_);
   }
 
  private:

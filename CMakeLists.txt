@@ -297,6 +297,8 @@ else()
   message(STATUS "Downloading and using libtorch 2.1.0 for CPU at ${LIBTORCH_SOURCE_DIR}")
 endif()
 
+set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-Bsymbolic")
+
 if(USE_NPU)
   add_definitions(-DUSE_NPU)
   add_definitions(-DBUILD_LIBTORCH)

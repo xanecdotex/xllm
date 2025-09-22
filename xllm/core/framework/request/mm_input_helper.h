@@ -36,7 +36,6 @@ struct MMInputItem {
 
   torch::Tensor decode_data_;  // image: rgb, [c,h,w], uint8
 
-  std::string path_;
   double fps_;
 };
 

@@ -366,6 +366,18 @@ bool HFModelLoader::load_image_preprocessor_args(
     args_.mm_image_max_pixels() =
         image_preprocess_reader.value_or<int>("max_pixels", 0);
 
+    args_.mm_video_min_frames() =
+        image_preprocess_reader.value_or<int>("min_frames", 0);
+
+    args_.mm_video_max_frames() =
+        image_preprocess_reader.value_or<int>("max_frames", 0);
+
+    args_.mm_video_num_frames() =
+        image_preprocess_reader.value_or<int>("num_frames", -1);
+
+    args_.mm_video_fps() =
+        image_preprocess_reader.value_or<double>("fps", -1.0);
+
     args_.mm_image_patch_size() =
         image_preprocess_reader.value_or<int>("patch_size", 0);
 
