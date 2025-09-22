@@ -99,7 +99,7 @@
     },
     {
       "name": "opencv4",
-      "version>=": "4.11.0",
+      "version>=": "4.7.0",
       "default-features": false,
       "features": [
       "ffmpeg"
@@ -130,26 +130,5 @@
       "version>=": "3.4.0"
     }
   ],
-  "overrides": [
-    { "name": "glog", "version": "0.6.0", "port-version": 2 },
-    {
-      "name": "folly",
-      "version": "2024.01.01.00",
-      "port-version": 0
-    },
-     {
-      "name": "fmt",
-      "version": "10.1.1",
-      "port-version": 0
-    },
-    {
-      "name": "boost-asio",
-      "version": "1.84.0"
-    },
-    {
-      "name": "boost-beast",
-      "version": "1.84.0"
-    }
-  ],
-  "builtin-baseline": "ce613c41372b23b1f51333815feb3edd87ef8a8b"
+  "builtin-baseline": "fba75d09065fcc76a25dcf386b1d00d33f5175af"
 }

@@ -89,10 +89,6 @@ def get_python_include_path():
 
 # PYTORCH_INSTALL_PATH and LIBTORCH_ROOT
 def get_torch_root_path():
-    LIBTORCH_210_CPU = "/usr/local/lib64/python3.11/site-packages/torch"
-    import os
-    if os.path.isdir(LIBTORCH_210_CPU):
-        return LIBTORCH_210_CPU
     try:
         import torch
         import os
