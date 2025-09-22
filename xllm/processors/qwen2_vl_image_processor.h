@@ -51,7 +51,7 @@ class Qwen2VLImageProcessor : public ImageProcessor {
   bool do_rescale_ = true;
   bool do_resize_ = true;
 
-  bool do_sample_frame_ = false;
+  bool do_sample_frame_ = true;
   std::vector<double> image_mean_;
   std::vector<double> image_std_;
 
@@ -69,6 +69,9 @@ class Qwen2VLImageProcessor : public ImageProcessor {
 
   int min_frames_ = 2;
   int max_frames_ = 768;
+
+  int num_frames_ = -1;
+  double set_fps_ = -1.0;
 };
 
 }  // namespace xllm

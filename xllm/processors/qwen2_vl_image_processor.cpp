@@ -81,6 +81,8 @@ Qwen2VLImageProcessor::Qwen2VLImageProcessor(const ModelArgs& args) {
 
   min_frames_ = args.mm_video_min_frames();
   max_frames_ = args.mm_video_max_frames();
+  num_frames_ = args.mm_video_num_frames();
+  set_fps_ = args.mm_video_fps();
 
   // fuse image mean/std and rescale_factor
   if (do_rescale_ && do_normalize_) {
@@ -263,8 +265,13 @@ bool Qwen2VLImageProcessor::process_video(
       this->init_frames(origin_video);  // default sample to 32 frames
 
   if (do_sample_frame_) {
-    torch::Tensor video = this->sample_frames(
-        origin_video, fps, temporal_patch_size_, min_frames_, max_frames_);
+    video = this->sample_frames(video,
+                                fps,
+                                temporal_patch_size_,
+                                min_frames_,
+                                max_frames_,
+                                num_frames_,
+                                set_fps_);
   }
 
   auto shape = video.sizes();

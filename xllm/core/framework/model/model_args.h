@@ -284,6 +284,9 @@ struct ModelArgs {
   PROPERTY(int, mm_video_min_frames) = 0;
   PROPERTY(int, mm_video_max_frames) = 0;
 
+  PROPERTY(int, mm_video_num_frames) = -1;
+  PROPERTY(double, mm_video_fps) = -1.0;
+
   PROPERTY(int, mm_image_patch_size) = 0;
   PROPERTY(int, mm_image_temporal_patch_size) = 0;
   PROPERTY(int, mm_image_merge_size) = 0;

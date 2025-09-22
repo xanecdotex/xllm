@@ -162,7 +162,6 @@ torch::Tensor ImageProcessor::sample_frames(const torch::Tensor& video,
                                             int num_frames,
                                             double set_fps) {
   auto video_frames = video.unbind(0);
-
   if (set_fps > 0.0 && num_frames > 0) {
     LOG(FATAL) << "num_frames and fps are mutually exclusive arguments, please "
                   "use only one!";
@@ -206,6 +205,7 @@ torch::Tensor ImageProcessor::sample_frames(const torch::Tensor& video,
   }
 
   if (num_frames > 0) {
+    LOG(INFO) << num_frames;
     std::vector<torch::Tensor> picked_frames;
     picked_frames.reserve(num_frames);
     for (int i = 0; i < num_frames; ++i) {
