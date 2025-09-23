@@ -290,9 +290,6 @@ class ImageHandler : public Handler {
     OpenCVImageDecoder decoder;
     return decoder.decode(input.raw_data_, input.decode_data_);
   }
-
- private:
-  const std::string dataurl_prefix_;
 };
 
 class VideoHandler : public Handler {
