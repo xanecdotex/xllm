@@ -513,7 +513,7 @@ def apply_patch():
 if __name__ == "__main__":
     device = 'a2'  # default
     arch = get_cpu_arch()
-    install_kernels = True
+    install_kernels = False
     if '--device' in sys.argv:
         idx = sys.argv.index('--device')
         if idx + 1 < len(sys.argv):

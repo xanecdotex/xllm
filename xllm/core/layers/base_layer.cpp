@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "base_layer.h"
 
+#include <glog/logging.h>
+
 namespace xllm {
 namespace layer {
 
@@ -30,7 +32,8 @@ BaseLayer::BaseLayer(const ModelContext& context)
   if (!quant_args.torch_dtype().empty()) {
     torch_dtype_ = quant_args.torch_dtype();
   }
-
+  LOG(INFO) << "BaseLayer quantize_type_:" << quantize_type_
+            << ", torch_dtype_:" << torch_dtype_;
   dp_size_ = parallel_args_.dp_size();
   dp_local_tp_size_ = parallel_args_.world_size() / dp_size_;
   dp_rank_ = parallel_args_.rank() / dp_local_tp_size_;

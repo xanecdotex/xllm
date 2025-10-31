@@ -119,6 +119,8 @@ static const std::unordered_map<std::string, int> WEIGHT_MAPPING = {
     // Expert MLP - Down projection
     {"down_proj.weight", IN_MLP_DOWN_WEIGHT_EXPERT},
 
+    {"gate_up_proj.weight", IN_MLP_GATEUP_WEIGHT_EXPERT},
+
 };
 
 static const std::unordered_map<std::string, int> WEIGHT_MAPPING_W8A8 = {
@@ -233,6 +235,16 @@ NpuQwen3MoeDecoderLayerImpl::NpuQwen3MoeDecoderLayerImpl(
   CHECK_EQ(parallel_args.world_size(), dp_size_ * dp_local_tp_size_);
   dp_local_tp_rank_ = parallel_args.rank() % dp_local_tp_size_;
 
+  // LOG(INFO) << "world_size rank num_experts_ ep_size_  ep_local_tp_size_ "
+  //              "num_experts_per_partition_ ep_rank_: ";
+  // LOG(INFO) << parallel_args.world_size() << " " << parallel_args.rank() << "
+  // "
+  //           << num_experts_ << " " << ep_size_ << " " << ep_local_tp_size_
+  //           << " " << num_experts_per_partition_ << " " << ep_rank_;
+  // LOG(INFO) << "dp_size_ dp_local_tp_size_ dp_local_tp_rank_:";
+  // LOG(INFO) << dp_size_ << " " << dp_local_tp_size_ << " " <<
+  // dp_local_tp_rank_;
+
   param_from_args(prefill_param_, model_args, parallel_args, true);
   param_from_args(decode_param_, model_args, parallel_args, false);
   initialize_tensors(options);
@@ -293,6 +305,8 @@ void NpuQwen3MoeDecoderLayerImpl::resize_experts_weights(
     experts_weights_["up_proj.weight_scale"] =
         std::vector<torch::Tensor>(num_of_device_experts);
     experts_weights_["down_proj.weight_scale"] =
+        std::vector<torch::Tensor>(num_of_device_experts);
+    experts_weights_["gate_up_proj.weight"] =
         std::vector<torch::Tensor>(num_of_device_experts);
   }
 }
@@ -634,7 +648,7 @@ void NpuQwen3MoeDecoderLayerImpl::verify_loaded_weights(
     const std::string& prefix) const {
   for (const auto& [name, index] : WEIGHT_MAPPING) {
     if (name == "down_proj.weight" || name == "gate_proj.weight" ||
-        name == "up_proj.weight") {
+        name == "up_proj.weight" || name == "gate_up_proj.weight") {
       continue;
     }
     CHECK(at_weight_tensors_[index].sizes() != std::vector<int64_t>({1}))

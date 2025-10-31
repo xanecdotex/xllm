@@ -70,6 +70,144 @@ class QWen3ModelImpl : public QWenModelImplBase<QWen3DecoderLayer> {
       blocks_->push_back(block);
     }
   }
+
+  torch::Tensor deepstack_process(torch::Tensor hidden_states,
+                                  torch::Tensor visual_pos_masks,
+                                  torch::Tensor visual_embeds) {
+    visual_pos_masks = visual_pos_masks.to(hidden_states.device());
+    auto selected = hidden_states.index({visual_pos_masks});
+    auto local_this = selected + visual_embeds;
+    hidden_states.index_put_({visual_pos_masks}, local_this);
+    return hidden_states;
+  }
+
+  virtual torch::Tensor forward(
+      std::vector<torch::Tensor> tokens,
+      std::vector<torch::Tensor> positions,
+      std::vector<KVCache>& kv_caches,
+      const std::vector<ModelInputParams>& input_params) override {
+    auto micro_batch_num = tokens.size();
+    std::vector<torch::Tensor> hs;
+    hs.reserve(micro_batch_num);
+    std::vector<torch::Tensor> cos_poss;
+    cos_poss.reserve(micro_batch_num);
+    std::vector<torch::Tensor> sin_poss;
+    sin_poss.reserve(micro_batch_num);
+    std::vector<torch::Tensor> attn_masks;
+    attn_masks.reserve(micro_batch_num);
+    std::vector<ModelInputParams>& input_params_news =
+        const_cast<std::vector<ModelInputParams>&>(input_params);
+
+    for (auto i = 0; i < micro_batch_num; ++i) {
+      if (tokens[i].numel() == 0) {
+        tokens[i] = torch::tensor({1}).to(torch::kInt32).to(tokens[0].device());
+        positions[i] =
+            torch::tensor({0}).to(torch::kInt32).to(tokens[0].device());
+      }
+      auto inputs_embeds = input_params[i].input_embedding;
+      torch::Tensor h;
+      if (inputs_embeds.defined()) {
+        h = inputs_embeds;
+      } else {
+        h = embed_tokens_[i](tokens[i], 0);
+      }
+      hs.push_back(std::move(h));
+      auto target_cos_sin = atb_pos_embeds_[i](cos_sin_, positions[i], 0);
+      auto target_cos_sin_chunks =
+          target_cos_sin.chunk(/*chunks=*/2, /*dim=*/-1);
+      auto cos_pos = target_cos_sin_chunks[0].contiguous();
+      auto sin_pos = target_cos_sin_chunks[1].contiguous();
+      if (positions[i].dim() == 2) {  // mrope
+        auto apply = [this](torch::Tensor x) {
+          // auto sections = mrope_section_;
+          auto freqs_t = x[0].clone();
+          for (int dim_idx = 1; dim_idx <= 2; ++dim_idx) {
+            int64_t offset = dim_idx;  // H -> offset=1, W -> offset=2
+            int64_t section_len = mrope_section_[dim_idx];
+            int64_t length = section_len * 3;
+
+            // indices: [offset, offset+3, offset+6, ..., < length]
+            auto idx_first_half =
+                torch::arange(offset, length, 3, torch::kLong);
+            auto idx_second_half =
+                torch::arange(offset, length, 3, torch::kLong);
+            auto idx_tensor =
+                torch::cat({idx_first_half, idx_second_half}, 0).to(x.device());
+            // freqs_t[..., idx] = freqs[dim_idx][..., idx]
+            auto src = x[dim_idx].index_select(-1, idx_tensor);
+            freqs_t.index_copy_(-1, idx_tensor, src);
+          }
+          return freqs_t;
+        };
+        cos_pos = apply(cos_pos.reshape(
+            {positions[i].sizes().front(), -1, cos_pos.sizes().back()}));
+        sin_pos = apply(sin_pos.reshape(
+            {positions[i].sizes().front(), -1, sin_pos.sizes().back()}));
+      }
+      torch::Tensor attn_mask;
+
+      torch::Tensor max_of_seq = torch::max(input_params[i].kv_seq_lens);
+      max_seq_len_ = FLAGS_enable_chunked_prefill
+                         ? std::max(max_of_seq.item<int>(), max_seq_len_)
+                         : 128;
+      attn_mask = attn_mask_.get_attn_mask(
+          max_seq_len_, cos_pos.dtype().toScalarType(), cos_pos.device());
+
+      if (FLAGS_enable_chunked_prefill) {
+        int batch_size = input_params[i].q_seq_lens_vec.size();
+        std::vector<torch::Tensor> req_mask_vec;
+        req_mask_vec.reserve(batch_size);
+        for (int j = 0; j < batch_size; j++) {
+          int start = input_params[i].kv_seq_lens_vec[j] -
+                      input_params[i].q_seq_lens_vec[j];
+          int end = input_params[i].kv_seq_lens_vec[j];
+
+          auto req_mask_slice = attn_mask.slice(0, start, end);
+          req_mask_vec.emplace_back(req_mask_slice);
+        }
+        attn_mask = torch::cat(req_mask_vec, 0);
+      }
+      cos_poss.push_back(std::move(cos_pos));
+      sin_poss.push_back(std::move(sin_pos));
+      attn_masks.push_back(std::move(attn_mask));
+    }
+    for (size_t i = 0; i < layers_.size(); i++) {
+      std::vector<aclrtEvent*> events(micro_batch_num, nullptr);
+      std::vector<std::atomic<bool>*> event_flags(micro_batch_num, nullptr);
+      for (auto j = 0; j < micro_batch_num; ++j) {
+        if (input_params[j].layer_synchronizer != nullptr) {
+          events[j] = input_params[j].layer_synchronizer->get_event(i);
+          event_flags[j] =
+              input_params[j].layer_synchronizer->get_event_flag(i);
+        }
+      }
+      auto& layer = layers_[i];
+
+      layer(hs,
+            cos_poss,
+            sin_poss,
+            attn_masks,
+            kv_caches[i],
+            input_params_news,
+            i,
+            events,
+            event_flags);
+
+      for (int j = 0; j < micro_batch_num; ++j) {
+        const auto& deep_stacks_j = input_params[j].deep_stacks;
+        const int dsz = static_cast<int>(deep_stacks_j.size());
+        if (dsz > 0 && static_cast<int>(i) < dsz) {
+          hs[j] = deepstack_process(
+              hs[j], input_params[j].visual_pos_masks, deep_stacks_j[i]);
+        }
+      }
+    }
+    auto cancated_h = torch::cat(hs, 0);
+    return norm_(cancated_h, 0);
+  }
+
+ private:
+  torch::Tensor viusal_pos_mask_;
 };
 TORCH_MODULE(QWen3Model);
 

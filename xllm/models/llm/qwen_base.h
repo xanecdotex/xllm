@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <atb/atb_infer.h>
 #include <gflags/gflags.h>
+#include <glog/logging.h>
 #include <torch/torch.h>
 
 #include <string>
@@ -224,10 +225,14 @@ class QWenModelImplBase : public torch::nn::Module {
 
       if (positions[i].dim() == 2) {  // mrope
         auto apply = [this](torch::Tensor x) {
+          LOG(INFO) << "x size " << x.sizes();
           auto sections = mrope_section_;
           sections.insert(sections.end(), sections.begin(), sections.end());
 
           auto vec = x.split(sections, -1);
+          for (auto v : vec) {
+            LOG(INFO) << "v size " << v.sizes();
+          }
           std::vector<torch::Tensor> selects;
           selects.reserve(vec.size());
 
@@ -322,6 +327,7 @@ class QWenModelImplBase : public torch::nn::Module {
   }
 
   virtual void verify_loaded_weights(const std::string& prefix) const {
+    LOG(INFO) << "prefix" << prefix;
     for (auto i = 0; i < FLAGS_default_micro_batch_num; i++) {
       embed_tokens_[i]->verify_loaded_weights(prefix + "embed_tokens.");
     }
@@ -415,15 +421,25 @@ class QWenForCausalLMImplBase : public torch::nn::Module {
 
   void load_model(std::unique_ptr<ModelLoader> loader,
                   std::string prefix = "" /*llm model weight prefix*/) {
+    LOG(INFO) << "prefix" << prefix << tie_word_embeddings;
+    // if(prefix == "model.language_model.")
+
     for (const auto& state_dict : loader->get_state_dicts()) {
-      model_->load_state_dict(
-          state_dict->get_dict_with_prefix(prefix + "model."));
+      if (prefix == "model.language_model.")
+        model_->load_state_dict(state_dict->get_dict_with_prefix(prefix));
+      else
+        model_->load_state_dict(
+            state_dict->get_dict_with_prefix(prefix + "model."));
       if (tie_word_embeddings) {
         lm_head_->load_state_dict(
             state_dict->get_dict_with_prefix(prefix + "model.embed_tokens."));
       } else {
-        lm_head_->load_state_dict(
-            state_dict->get_dict_with_prefix(prefix + "lm_head."));
+        if (prefix == "model.language_model.")
+          lm_head_->load_state_dict(
+              state_dict->get_dict_with_prefix("lm_head."));
+        else
+          lm_head_->load_state_dict(
+              state_dict->get_dict_with_prefix(prefix + "lm_head."));
       }
     }
     // verify

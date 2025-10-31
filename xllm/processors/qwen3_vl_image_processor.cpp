@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "qwen2_vl_image_processor.h"
+#include "qwen3_vl_image_processor.h"
 
 namespace xllm {
 
@@ -65,18 +65,17 @@ std::optional<Size> smart_resize(int height,
 }
 }  // namespace
 
-Qwen2VLImageProcessor::Qwen2VLImageProcessor(const ModelArgs& args) {
+Qwen3VLImageProcessor::Qwen3VLImageProcessor(const ModelArgs& args) {
   image_mean_ = args.mm_image_normalize_mean();
   image_std_ = args.mm_image_normalize_std();
 
-  min_pixels_ = args.mm_image_min_pixels();
-  max_pixels_ = args.mm_image_max_pixels();
+  min_pixels_ = args.mm_image_shortest_edge();
+  max_pixels_ = args.mm_image_longest_edge();
 
   patch_size_ = args.mm_image_patch_size();
   temporal_patch_size_ = args.mm_image_temporal_patch_size();
 
   merge_size_ = args.mm_image_merge_size();
-  size_ = {{"longest_edge", 12845056}, {"shortest_edge", 3136}};
 
   // fuse image mean/std and rescale_factor
   if (do_rescale_ && do_normalize_) {
@@ -92,7 +91,7 @@ Qwen2VLImageProcessor::Qwen2VLImageProcessor(const ModelArgs& args) {
   }
 }
 
-bool Qwen2VLImageProcessor::process(const MMInput& inputs, MMData& datas) {
+bool Qwen3VLImageProcessor::process(const MMInput& inputs, MMData& datas) {
   std::vector<torch::Tensor> images = inputs.get_decode_data(MMType::IMAGE);
   if (images.empty()) {
     LOG(ERROR) << " image tensor not found.";
@@ -107,7 +106,7 @@ bool Qwen2VLImageProcessor::process(const MMInput& inputs, MMData& datas) {
   return true;
 }
 
-bool Qwen2VLImageProcessor::process_images(std::vector<torch::Tensor> images,
+bool Qwen3VLImageProcessor::process_images(std::vector<torch::Tensor> images,
                                            MMData& mm_datas) {
   std::vector<torch::Tensor> pixel_values;
   std::vector<int64_t> grids;
@@ -128,7 +127,7 @@ bool Qwen2VLImageProcessor::process_images(std::vector<torch::Tensor> images,
   return true;
 }
 
-bool Qwen2VLImageProcessor::process_image(
+bool Qwen3VLImageProcessor::process_image(
     torch::Tensor image,
     std::vector<torch::Tensor>& pixel_values,
     std::vector<int64_t>& grids) {
@@ -144,12 +143,8 @@ bool Qwen2VLImageProcessor::process_image(
     auto size = smart_resize(resized_height,
                              resized_width,
                              patch_size_ * merge_size_,
-                             //  size_["shortest_edge"],
-                             //  size_["longest_edge"]);
                              min_pixels_,
                              max_pixels_);
-    // size_["shortest_edge"],
-    // size_["longest_edge"]);
     if (!size) {
       return false;
     }

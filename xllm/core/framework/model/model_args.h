@@ -239,6 +239,7 @@ struct ModelArgs {
 
   PROPERTY(int, mm_window_size) = 0;
   PROPERTY(std::vector<int64_t>, mm_fullatt_block_indexes);
+  PROPERTY(std::vector<int64_t>, mm_deepstack_visual_indexes);
   PROPERTY(int, mm_tokens_per_second) = 0;
   PROPERTY(int, mm_temporal_patch_size) = 0;
 
@@ -248,6 +249,7 @@ struct ModelArgs {
   // VLM model projector's mm_projector_hidden_act
   PROPERTY(std::string, mm_projector_hidden_act);
 
+  PROPERTY(int64_t, mm_num_position_embeddings);
   // VLM model projector's mm_projector_n_layers
   PROPERTY(int64_t, mm_projector_n_layers) = 0;
 
@@ -277,6 +279,9 @@ struct ModelArgs {
   PROPERTY(bool, mm_image_do_normalize) = false;
   PROPERTY(std::vector<double>, mm_image_normalize_mean) = {};
   PROPERTY(std::vector<double>, mm_image_normalize_std) = {};
+
+  PROPERTY(int64_t, mm_image_shortest_edge) = 65536;
+  PROPERTY(int64_t, mm_image_longest_edge) = 16777216;
 
   PROPERTY(int, mm_image_min_pixels) = 0;
   PROPERTY(int, mm_image_max_pixels) = 0;
@@ -471,6 +476,11 @@ inline std::ostream& operator<<(std::ostream& os, const ModelArgs& args) {
     os << index << ",";
   }
   os << "]";
+  os << ", mm_deepstack_visual_indexes: [";
+  for (auto& index : args.mm_deepstack_visual_indexes()) {
+    os << index << ",";
+  }
+  os << "]";
   os << ", mm_tokens_per_second: " << args.mm_tokens_per_second();
   os << ", mm_temporal_patch_size: " << args.mm_temporal_patch_size();
   os << ", mm_projector_type: " << args.mm_projector_type();
@@ -498,6 +508,8 @@ inline std::ostream& operator<<(std::ostream& os, const ModelArgs& args) {
     os << std << ", ";
   }
   os << "]";
+  os << ", mm_image_shortest_edge: " << args.mm_image_shortest_edge();
+  os << ", mm_image_longest_edge: " << args.mm_image_longest_edge();
   os << ", mm_image_min_pixels: " << args.mm_image_min_pixels();
   os << ", mm_image_max_pixels: " << args.mm_image_max_pixels();
   os << ", mm_image_patch_size: " << args.mm_image_patch_size();
