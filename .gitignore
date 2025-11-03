@@ -56,3 +56,9 @@ compile_commands.json
 
 # local files
 /local
+
+*.log
+log/
+core.*
+*.sh
+*.py
