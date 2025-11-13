@@ -126,6 +126,7 @@ class BaseLayer : public torch::nn::Module {
 
  protected:
   std::vector<at::Tensor> at_weight_tensors_;
+  torch::TensorOptions options_;
   at::Device device_;
   std::string name_;
   torch::ScalarType dtype_;

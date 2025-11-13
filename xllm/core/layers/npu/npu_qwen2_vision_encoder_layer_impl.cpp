@@ -185,8 +185,8 @@ void NpuQwen2VisionEncoderLayerImpl::load_state_dict(
 }
 
 int64_t NpuQwen2VisionEncoderLayerImpl::init_layer() {
-  name_ = "qwen3_encoder_layer";
-  model_name_ = "qwen3_vl";
+  name_ = "qwen2_encoder_layer";
+  model_name_ = "qwen2_vl";
   CHECK_OPERATION_STATUS_RETURN(init_node(encode_node_, encode_param_));
   return atb::NO_ERROR;
 }

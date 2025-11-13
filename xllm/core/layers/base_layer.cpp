@@ -20,6 +20,7 @@ namespace layer {
 
 BaseLayer::BaseLayer(const ModelContext& context)
     : device_(context.get_tensor_options().device()),
+      options_(context.get_tensor_options()),
       name_(""),
       parallel_args_(context.get_parallel_args()) {
   auto quant_args = context.get_quant_args();
@@ -79,7 +80,7 @@ void BaseLayer::correct_tensor_dtype(torch::Tensor& tensor,
   if (tensor.dtype() != torch::kInt8 && tensor.dtype() != torch::kInt32 &&
       tensor.dtype() != torch::kInt64) {
     torch::Dtype dtype = string2dtype(torch_dtype_);
-    tensor = tensor.to(dtype);
+    tensor = tensor.to(dtype).to(options_);
   }
 }
 
@@ -90,7 +91,8 @@ void BaseLayer::set_weight(const StateDict& state_dict,
     if (absl::EndsWith(name, tensor_name)) {
       at::Tensor mutable_tensor = tensor;
       correct_tensor_dtype(mutable_tensor, tensor_name);
-      at_weight_tensors_[weight_position] = mutable_tensor.to(device_);
+      at_weight_tensors_[weight_position] =
+          mutable_tensor.to(device_).to(options_);
     }
   }
 }
@@ -104,7 +106,8 @@ void BaseLayer::set_weight(const StateDict& state_dict,
       if (parallel_args_.world_size() <= 1) {
         at::Tensor mutable_tensor = tensor;
         correct_tensor_dtype(mutable_tensor, tensor_name);
-        at_weight_tensors_[weight_position] = mutable_tensor.to(device_);
+        at_weight_tensors_[weight_position] =
+            mutable_tensor.to(device_).to(options_);
       } else {
         at_weight_tensors_[weight_position] =
             state_dict
@@ -112,7 +115,8 @@ void BaseLayer::set_weight(const StateDict& state_dict,
                                     /*dim=*/dim,
                                     /*rank=*/parallel_args_.rank(),
                                     /*world_size=*/parallel_args_.world_size())
-                .to(device_);
+                .to(device_)
+                .to(options_);
         correct_tensor_dtype(at_weight_tensors_[weight_position], tensor_name);
       }
     }
@@ -130,7 +134,8 @@ void BaseLayer::set_weight(const StateDict& state_dict,
       if (world_size <= 1) {
         at::Tensor mutable_tensor = tensor;
         correct_tensor_dtype(mutable_tensor, tensor_name);
-        at_weight_tensors_[weight_position] = mutable_tensor.to(device_);
+        at_weight_tensors_[weight_position] =
+            mutable_tensor.to(device_).to(options_);
       } else {
         at_weight_tensors_[weight_position] =
             state_dict
@@ -138,7 +143,8 @@ void BaseLayer::set_weight(const StateDict& state_dict,
                                     /*dim=*/dim,
                                     /*rank=*/rank,
                                     /*world_size=*/world_size)
-                .to(device_);
+                .to(device_)
+                .to(options_);
         correct_tensor_dtype(at_weight_tensors_[weight_position], tensor_name);
       }
     }
