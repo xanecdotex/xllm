@@ -88,7 +88,7 @@ bool VideoHandler::load(const MMContent& content, MMInputItem& input) {
 
   const auto& video_url = content.video_url;
   const auto& url = video_url.url;
-  LOG(INFO) << dataurl_prefix_;
+
   if (url.compare(0, dataurl_prefix_.size(), dataurl_prefix_) ==
       0) {  // data url
 

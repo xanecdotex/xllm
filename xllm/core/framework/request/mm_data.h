@@ -57,10 +57,14 @@ struct VideoMetadata {
   int64_t total_num_frames = 0;  // original frames
   double duration = 0.0;
   double sampled_fps = 0.0;
+  torch::Tensor frame_indices;
+  std::vector<double> timestamps;
 };
 
 using MMKey = std::string;
-using MMValue = std::variant<torch::Tensor, std::vector<torch::Tensor>>;
+using MMValue = std::variant<torch::Tensor,
+                             std::vector<torch::Tensor>,
+                             std::vector<VideoMetadata>>;
 using MMDict = std::unordered_map<MMKey, MMValue>;
 
 struct MMData {

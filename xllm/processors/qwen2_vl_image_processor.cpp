@@ -230,25 +230,10 @@ bool Qwen2VLImageProcessor::process_videos(
   auto values = torch::cat(pixel_values);
   auto thw = torch::tensor(grids).clone().reshape({-1, 3});
 
-  const size_t num_videos = videos.size();
-
-  std::vector<double> second_per_grid;
-  second_per_grid.reserve(num_videos);
-  for (size_t i = 0; i < num_videos; ++i) {
-    const auto& metadata = video_meta_list[i];
-    double fps =
-        metadata.sampled_fps > 0.0 ? metadata.sampled_fps : metadata.fps;
-    double seconds_per_grid = static_cast<double>(temporal_patch_size_) / fps;
-    second_per_grid.push_back(seconds_per_grid);
-  }
-
-  auto opts = torch::TensorOptions().dtype(torch::kFloat32);
-  auto second_per_grid_ts = torch::tensor(second_per_grid, opts);
-
   mm_datas = MMData(MMType::VIDEO,
                     {{"video_grid_thw", thw},
                      {"pixel_values_videos", values},
-                     {"second_per_grid_ts", second_per_grid_ts}});
+                     {"video_metadata", video_meta_list}});
   return true;
 }
 
@@ -260,26 +245,34 @@ bool Qwen2VLImageProcessor::process_video(
   if (origin_video.dim() != 4) {
     LOG(FATAL) << "video must be TCHW";
   }
-  torch::Tensor video;
-
+  torch::Tensor indices;
   if (do_sample_frame_) {
-    video = this->sample_frames(origin_video,
-                                metadata,
-                                temporal_patch_size_,
-                                min_frames_,
-                                max_frames_,
-                                /*num_frames=*/-1,
-                                /*set_fps=*/2.0);
+    indices = this->sample_frames(metadata,
+                                  temporal_patch_size_,
+                                  min_frames_,
+                                  max_frames_,
+                                  /*num_frames=*/-1,
+                                  /*set_fps=*/2.0);
   } else {
-    video = this->init_frames(origin_video);  // default sample to 32 frames
+    indices = this->init_frames(metadata);  // default sample to 32 frames
+  }
+  auto video = origin_video.index_select(/*dim=*/0, indices);
+  int64_t sampled_total_frames = video.size(0);
+
+  metadata.frame_indices = indices;
+  metadata.timestamps.clear();
+  metadata.timestamps.reserve(static_cast<size_t>(sampled_total_frames));
+  double fps_for_ts = (metadata.fps > 0.0) ? metadata.fps : 24.0;
+  for (int64_t i = 0; i < sampled_total_frames; ++i) {
+    int64_t frame_idx = metadata.frame_indices[i].item<int64_t>();
+    metadata.timestamps.push_back(static_cast<double>(frame_idx) / fps_for_ts);
   }
 
-  int64_t sampled_total_frames = video.size(0);
   if (metadata.total_num_frames > 0 && metadata.fps > 0.0) {
     metadata.sampled_fps = double(sampled_total_frames) /
                            double(metadata.total_num_frames) * metadata.fps;
   } else {
-    metadata.sampled_fps = (metadata.fps > 0.0) ? metadata.fps : 24.0;
+    metadata.sampled_fps = fps_for_ts;
   }
 
   auto shape = video.sizes();

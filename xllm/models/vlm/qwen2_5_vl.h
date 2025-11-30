@@ -732,9 +732,21 @@ class Qwen2_5_VLForConditionalGenerationImpl : public torch::nn::Module {
     if (const auto& res = mm_data.get<torch::Tensor>("video_grid_thw"))
       video_grid_thw = res.value();
 
+    std::vector<VideoMetadata> metadatas;
     torch::Tensor second_per_grid_ts;
-    if (const auto& res = mm_data.get<torch::Tensor>("second_per_grid_ts"))
-      second_per_grid_ts = res.value();
+    if (const auto& res =
+            mm_data.get<std::vector<VideoMetadata>>("video_metadata"))
+      metadatas = res.value();
+    std::vector<float> second;
+    second.reserve(metadatas.size());
+    for (const auto& metadata : metadatas) {
+      double fps =
+          metadata.sampled_fps > 0.0 ? metadata.sampled_fps : metadata.fps;
+      second.push_back(
+          static_cast<float>(model_args_.mm_temporal_patch_size()) /
+          static_cast<float>(fps));
+    }
+    second_per_grid_ts = torch::tensor(second, torch::kFloat32);
 
     std::optional<Qwen2_5_VLImageInputs> image_inputs;
     std::optional<Qwen2_5_VLVideoInputs> video_inputs;
