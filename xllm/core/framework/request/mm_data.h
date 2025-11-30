@@ -52,6 +52,13 @@ class MMType {
   Value value = Value::NONE;
 };
 
+struct VideoMetadata {
+  double fps = 0.0;              // original fps
+  int64_t total_num_frames = 0;  // original frames
+  double duration = 0.0;
+  double sampled_fps = 0.0;
+};
+
 using MMKey = std::string;
 using MMValue = std::variant<torch::Tensor, std::vector<torch::Tensor>>;
 using MMDict = std::unordered_map<MMKey, MMValue>;

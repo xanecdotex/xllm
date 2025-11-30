@@ -39,6 +39,17 @@ class ImageProcessor {
   virtual torch::Tensor normalize(const torch::Tensor& image,
                                   const std::vector<double>& mean,
                                   const std::vector<double>& std);
+  virtual torch::Tensor init_frames(const torch::Tensor& video);
+  virtual torch::Tensor sample_frames(const torch::Tensor& video,
+                                      const VideoMetadata& meta,
+                                      int temporal_patch_size,
+                                      int min_frames,
+                                      int max_frames,
+                                      int num_frames = -1,
+                                      double set_fps = -1.0);
+  virtual torch::Tensor GLM_sample_frames(const torch::Tensor& video,
+                                          const VideoMetadata& metadata,
+                                          int temporal_patch_size);
 };
 
 }  // namespace xllm
