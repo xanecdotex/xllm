@@ -133,9 +133,9 @@ bool Qwen2VLImageProcessor::process_images(std::vector<torch::Tensor> images,
   auto thw = torch::tensor(grids);
 
   thw = thw.clone().reshape({-1, 3});
-  mm_datas = std::move(MMData(
-      MMType::IMAGE, {{"image_grid_thw", thw}, {"pixel_values", values}}));
 
+  mm_datas.update(MMType::IMAGE, "image_grid_thw", thw);
+  mm_datas.update(MMType::IMAGE, "pixel_values", values);
   return true;
 }
 
@@ -244,10 +244,10 @@ bool Qwen2VLImageProcessor::process_videos(
   auto opts = torch::TensorOptions().dtype(torch::kFloat32);
   auto second_per_grid_ts = torch::tensor(second_per_grid, opts);
 
-  mm_datas = std::move(MMData(MMType::VIDEO,
-                              {{"video_grid_thw", thw},
-                               {"pixel_values_videos", values},
-                               {"second_per_grid_ts", second_per_grid_ts}}));
+  mm_datas.update(MMType::VIDEO, "video_grid_thw", thw);
+  mm_datas.update(MMType::VIDEO, "pixel_values_videos", values);
+  mm_datas.update(MMType::VIDEO, "second_per_grid_ts", second_per_grid_ts);
+
   mm_datas.video_metadata = std::move(video_meta_list);
   return true;
 }
@@ -260,6 +260,7 @@ bool Qwen2VLImageProcessor::process_video(
   if (origin_video.dim() != 4) {
     LOG(FATAL) << "video must be TCHW";
   }
+
   torch::Tensor indices;
   if (do_sample_frame_) {
     indices = this->sample_frames(metadata,
@@ -268,7 +269,6 @@ bool Qwen2VLImageProcessor::process_video(
                                   max_frames_,
                                   /*num_frames=*/-1,
                                   /*set_fps=*/2.0);
-    // indices = this->GLM_sample_frames(metadata, temporal_patch_size_);
   } else {
     indices = this->init_frames(metadata);  // default sample to 32 frames
   }
