@@ -62,9 +62,7 @@ struct VideoMetadata {
 };
 
 using MMKey = std::string;
-using MMValue = std::variant<torch::Tensor,
-                             std::vector<torch::Tensor>,
-                             std::vector<VideoMetadata>>;
+using MMValue = std::variant<torch::Tensor, std::vector<torch::Tensor>>;
 using MMDict = std::unordered_map<MMKey, MMValue>;
 
 struct MMData {
@@ -149,6 +147,8 @@ struct MMData {
 
   uint32_t ty_ = MMType::NONE;
   MMDict data_;
+
+  std::vector<VideoMetadata> video_metadata;
 };
 
 }  // namespace xllm

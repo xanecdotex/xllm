@@ -230,10 +230,25 @@ bool Qwen2VLImageProcessor::process_videos(
   auto values = torch::cat(pixel_values);
   auto thw = torch::tensor(grids).clone().reshape({-1, 3});
 
-  mm_datas = MMData(MMType::VIDEO,
-                    {{"video_grid_thw", thw},
-                     {"pixel_values_videos", values},
-                     {"video_metadata", video_meta_list}});
+  const size_t num_videos = videos.size();
+  std::vector<double> second_per_grid;
+  second_per_grid.reserve(num_videos);
+  for (size_t i = 0; i < num_videos; ++i) {
+    const auto& metadata = video_meta_list[i];
+    double fps =
+        metadata.sampled_fps > 0.0 ? metadata.sampled_fps : metadata.fps;
+    double seconds_per_grid = static_cast<double>(temporal_patch_size_) / fps;
+    second_per_grid.push_back(seconds_per_grid);
+  }
+
+  auto opts = torch::TensorOptions().dtype(torch::kFloat32);
+  auto second_per_grid_ts = torch::tensor(second_per_grid, opts);
+
+  mm_datas = std::move(MMData(MMType::VIDEO,
+                              {{"video_grid_thw", thw},
+                               {"pixel_values_videos", values},
+                               {"second_per_grid_ts", second_per_grid_ts}}));
+  mm_datas.video_metadata = std::move(video_meta_list);
   return true;
 }
 
@@ -253,6 +268,7 @@ bool Qwen2VLImageProcessor::process_video(
                                   max_frames_,
                                   /*num_frames=*/-1,
                                   /*set_fps=*/2.0);
+    // indices = this->GLM_sample_frames(metadata, temporal_patch_size_);
   } else {
     indices = this->init_frames(metadata);  // default sample to 32 frames
   }
