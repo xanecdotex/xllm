@@ -293,7 +293,7 @@ if (USE_MANYLINUX)
 else()
   find_package(Python REQUIRED COMPONENTS Interpreter Development)
 endif()
-set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-Bsymbolic")
+
 if (USE_CXX11_ABI)
   # only use jemalloc if using the new C++-11 ABI
   find_package(Jemalloc)

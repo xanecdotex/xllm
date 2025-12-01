@@ -297,6 +297,9 @@ struct ModelArgs {
   PROPERTY(int64_t, mm_image_shortest_edge) = 0;
   PROPERTY(int64_t, mm_image_longest_edge) = 0;
 
+  PROPERTY(int64_t, mm_video_shortest_edge) = 0;
+  PROPERTY(int64_t, mm_video_longest_edge) = 0;
+
   PROPERTY(int, mm_image_patch_size) = 0;
   PROPERTY(int, mm_image_temporal_patch_size) = 0;
   PROPERTY(int, mm_image_merge_size) = 0;
@@ -502,6 +505,8 @@ inline std::ostream& operator<<(std::ostream& os, const ModelArgs& args) {
   os << ", mm_image_merge_size: " << args.mm_image_merge_size();
   os << ", mm_image_token_index: " << args.mm_image_token_index();
   os << ", mm_pad_token_id: " << args.mm_pad_token_id();
+  os << ", mm_video_shortest_edge: " << args.mm_video_shortest_edge();
+  os << ", mm_video_longest_edge: " << args.mm_video_longest_edge();
   os << ", tie_word_embeddings: " << args.tie_word_embeddings();
   os << ", use_sliding_window: " << args.use_sliding_window();
   os << ", sliding_window: " << args.sliding_window();

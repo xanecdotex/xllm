@@ -140,6 +140,14 @@ struct MMData {
 
   const MMDict& data() const { return data_; }
 
+  const std::vector<VideoMetadata>& get_video_metadata() const {
+    return video_metadata_;
+  }
+
+  void set_video_metadata(const std::vector<VideoMetadata>& meta) {
+    video_metadata_ = meta;
+  }
+
   void debug_print() const;
 
   static MMData to(const MMData& mm_data, const torch::Device& device);
@@ -148,7 +156,8 @@ struct MMData {
   uint32_t ty_ = MMType::NONE;
   MMDict data_;
 
-  std::vector<VideoMetadata> video_metadata;
+ private:
+  std::vector<VideoMetadata> video_metadata_;
 };
 
 }  // namespace xllm
