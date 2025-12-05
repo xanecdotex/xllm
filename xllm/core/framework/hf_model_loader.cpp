@@ -436,6 +436,28 @@ bool HFModelLoader::load_video_preprocessor_args(
 
     args_.mm_video_longest_edge() =
         video_preprocess_reader.value_or<int>("size.longest_edge", 0);
+
+    const auto& video_prerocess_data = video_preprocess_reader.data();
+    if (video_preprocess_reader.contains("image_mean")) {
+      args_.mm_video_normalize_mean() =
+          video_prerocess_data["image_mean"].get<std::vector<double>>();
+    }
+
+    if (video_preprocess_reader.contains("image_std")) {
+      args_.mm_video_normalize_std() =
+          video_prerocess_data["image_std"].get<std::vector<double>>();
+    }
+    args_.mm_video_patch_size() =
+        video_preprocess_reader.value_or<int>("patch_size", 0);
+
+    args_.mm_video_temporal_patch_size() =
+        video_preprocess_reader.value_or<int>("temporal_patch_size", 0);
+
+    args_.mm_video_merge_size() =
+        video_preprocess_reader.value_or<int>("merge_size", 0);
+
+    args_.mm_video_do_rescale() =
+        video_preprocess_reader.value_or<bool>("do_rescale", false);
   }
 
   return true;

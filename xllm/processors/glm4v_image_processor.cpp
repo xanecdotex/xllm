@@ -204,6 +204,17 @@ Glm4VImageProcessor::Glm4VImageProcessor(const ModelArgs& args) {
   temporal_patch_size_ = args.mm_image_temporal_patch_size();
 
   merge_size_ = args.mm_image_merge_size();
+
+  video_mean_ = args.mm_video_normalize_mean();
+  video_std_ = args.mm_video_normalize_std();
+
+  video_min_pixels_ = args.mm_video_shortest_edge();
+  video_max_pixels_ = args.mm_video_longest_edge();
+
+  video_patch_size_ = args.mm_video_patch_size();
+  video_temporal_patch_size_ = args.mm_video_temporal_patch_size();
+  video_merge_size_ = args.mm_video_merge_size();
+
   size_ = {{"longest_edge", 12845056}, {"shortest_edge", 3136}};
 
   // fuse image mean/std and rescale_factor
@@ -213,6 +224,14 @@ Glm4VImageProcessor::Glm4VImageProcessor(const ModelArgs& args) {
     }
 
     for (auto& item : image_std_) {
+      item = item * (1.0 / rescale_factor_);
+    }
+
+    for (auto& item : video_mean_) {
+      item = item * (1.0 / rescale_factor_);
+    }
+
+    for (auto& item : video_std_) {
       item = item * (1.0 / rescale_factor_);
     }
 
@@ -357,10 +376,33 @@ bool Glm4VImageProcessor::process_videos(
   }
   mm_datas.set_video_metadata(video_meta_list);
 
+  LOG(INFO) << video_meta_list[0].fps;
+  LOG(INFO) << video_meta_list[0].total_num_frames;
+  LOG(INFO) << video_meta_list[0].duration;
+  LOG(INFO) << video_meta_list[0].sampled_fps;
+  LOG(INFO) << video_meta_list[0].frame_indices;
+  LOG(INFO) << video_meta_list[0].timestamps;
+
   auto values = torch::cat(pixel_values);
   auto thw = torch::tensor(grids).clone().reshape({-1, 3});
+
+  const size_t num_videos = videos.size();
+  std::vector<double> second_per_grid;
+  second_per_grid.reserve(num_videos);
+  for (size_t i = 0; i < num_videos; ++i) {
+    const auto& metadata = video_meta_list[i];
+    double fps =
+        metadata.sampled_fps > 0.0 ? metadata.sampled_fps : metadata.fps;
+    double seconds_per_grid =
+        static_cast<double>(video_temporal_patch_size_) / fps;
+    second_per_grid.push_back(seconds_per_grid);
+  }
+
+  auto opts = torch::TensorOptions().dtype(torch::kFloat32);
+  auto second_per_grid_ts = torch::tensor(second_per_grid, opts);
   mm_datas.add(MMType::VIDEO, "video_grid_thw", thw);
   mm_datas.add(MMType::VIDEO, "pixel_values_videos", values);
+  mm_datas.add(MMType::VIDEO, "second_per_grid_ts", second_per_grid_ts);
 
   return true;
 }
@@ -376,7 +418,7 @@ bool Glm4VImageProcessor::process_video(
 
   torch::Tensor indices;
   if (do_sample_frame_) {
-    indices = this->sample_frames(metadata, temporal_patch_size_);
+    indices = this->sample_frames(metadata, video_temporal_patch_size_);
   } else {
     indices = torch::arange(0,
                             static_cast<int64_t>(origin_video.size(0)),
@@ -408,13 +450,13 @@ bool Glm4VImageProcessor::process_video(
   auto resized_width = shape[3];
 
   if (do_resize_) {
-    auto size = smart_resize(temporal_patch_size_,
+    auto size = smart_resize(time_len,
                              resized_height,
                              resized_width,
-                             temporal_patch_size_,
-                             patch_size_ * merge_size_,
-                             min_pixels_,
-                             max_pixels_);
+                             video_temporal_patch_size_,
+                             video_patch_size_ * video_merge_size_,
+                             video_min_pixels_,
+                             video_max_pixels_);
     if (!size) {
       return false;
     }
@@ -432,7 +474,7 @@ bool Glm4VImageProcessor::process_video(
       frame =
           this->resize(frame, {resized_height, resized_width}, resample_, true);
     // normalize
-    if (do_normalize_) frame = this->normalize(frame, image_mean_, image_std_);
+    if (do_normalize_) frame = this->normalize(frame, video_mean_, video_std_);
     // rescale
     if (do_rescale_) frame = this->rescale(frame, rescale_factor_);
     out_frames.push_back(frame);
@@ -440,34 +482,34 @@ bool Glm4VImageProcessor::process_video(
 
   auto out_video = torch::stack(out_frames);  // [T,C,H,W]
 
-  if (out_video.size(0) % temporal_patch_size_) {
+  if (out_video.size(0) % video_temporal_patch_size_) {
     auto last = out_video.index({time_len - 1})
                     .unsqueeze(0)
-                    .repeat({temporal_patch_size_ - 1, 1, 1, 1});
+                    .repeat({video_temporal_patch_size_ - 1, 1, 1, 1});
     out_video = torch::cat({out_video, last}, 0);
   }
 
   shape = out_video.sizes();
-  auto grid_h = resized_height / patch_size_;
-  auto grid_w = resized_width / patch_size_;
-  auto grid_t = shape[0] / temporal_patch_size_;
+  auto grid_h = resized_height / video_patch_size_;
+  auto grid_w = resized_width / video_patch_size_;
+  auto grid_t = shape[0] / video_temporal_patch_size_;
 
   out_video = out_video.contiguous();
 
   auto patches = out_video.view({grid_t,
-                                 temporal_patch_size_,
+                                 video_temporal_patch_size_,
                                  channel,
-                                 grid_h / merge_size_,
-                                 merge_size_,
-                                 patch_size_,
-                                 grid_w / merge_size_,
-                                 merge_size_,
-                                 patch_size_});
+                                 grid_h / video_merge_size_,
+                                 video_merge_size_,
+                                 video_patch_size_,
+                                 grid_w / video_merge_size_,
+                                 video_merge_size_,
+                                 video_patch_size_});
 
   patches = patches.permute({0, 3, 6, 4, 7, 2, 1, 5, 8});
-  patches = patches.reshape(
-      {grid_t * grid_h * grid_w,
-       channel * temporal_patch_size_ * patch_size_ * patch_size_});
+  patches = patches.reshape({grid_t * grid_h * grid_w,
+                             channel * video_temporal_patch_size_ *
+                                 video_patch_size_ * video_patch_size_});
 
   pixel_values.emplace_back(patches);
 

@@ -61,11 +61,22 @@ class Glm4VImageProcessor : public ImageProcessor {
   int merge_size_ = 2;
   int patch_size_ = 14;
 
+  std::vector<double> video_mean_;
+  std::vector<double> video_std_;
+
+  int video_max_pixels_ = 47040000;
+  int video_min_pixels_ = 12544;
+
+  int video_merge_size_ = 2;
+  int video_patch_size_ = 14;
+
   int resample_ = 3;
   double rescale_factor_ = 0.00392156862745098;
 
   std::unordered_map<std::string, int> size_;
   int temporal_patch_size_ = 2;
+
+  int video_temporal_patch_size_ = 2;
 
   bool do_sample_frame_ = true;
 

@@ -291,6 +291,11 @@ struct ModelArgs {
   PROPERTY(std::vector<double>, mm_image_normalize_mean) = {};
   PROPERTY(std::vector<double>, mm_image_normalize_std) = {};
 
+  // GLM
+  PROPERTY(bool, mm_video_do_rescale) = false;
+  PROPERTY(std::vector<double>, mm_video_normalize_mean) = {};
+  PROPERTY(std::vector<double>, mm_video_normalize_std) = {};
+
   PROPERTY(int, mm_image_min_pixels) = 0;
   PROPERTY(int, mm_image_max_pixels) = 0;
 
@@ -304,6 +309,11 @@ struct ModelArgs {
   PROPERTY(int, mm_image_patch_size) = 0;
   PROPERTY(int, mm_image_temporal_patch_size) = 0;
   PROPERTY(int, mm_image_merge_size) = 0;
+
+  // GLM
+  PROPERTY(int, mm_video_patch_size) = 0;
+  PROPERTY(int, mm_video_temporal_patch_size) = 0;
+  PROPERTY(int, mm_video_merge_size) = 0;
 
   PROPERTY(int, mm_image_feature_size) = 0;
   PROPERTY(int, mm_scale_resolution) = 0;
@@ -505,6 +515,21 @@ inline std::ostream& operator<<(std::ostream& os, const ModelArgs& args) {
      << args.mm_image_temporal_patch_size();
   os << ", mm_image_merge_size: " << args.mm_image_merge_size();
   os << ", mm_image_token_index: " << args.mm_image_token_index();
+  os << ", mm_video_normalize_mean: [";
+  for (const auto& mean : args.mm_video_normalize_mean()) {
+    os << mean << ", ";
+  }
+  os << "], mm_video_normalize_std: [";
+  for (const auto& std : args.mm_video_normalize_std()) {
+    os << std << ", ";
+  }
+  os << "]";
+  os << ", mm_video_shortest_edge: " << args.mm_video_shortest_edge();
+  os << ", mm_video_longest_edge: " << args.mm_video_longest_edge();
+  os << ", mm_video_patch_size: " << args.mm_video_patch_size();
+  os << ", mm_video_temporal_patch_size: "
+     << args.mm_video_temporal_patch_size();
+  os << ", mm_video_merge_size: " << args.mm_video_merge_size();
   os << ", mm_pad_token_id: " << args.mm_pad_token_id();
   os << ", tie_word_embeddings: " << args.tie_word_embeddings();
   os << ", use_sliding_window: " << args.use_sliding_window();
