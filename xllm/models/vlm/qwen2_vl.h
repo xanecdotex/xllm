@@ -15,7 +15,6 @@ limitations under the License.
 
 #pragma once
 
-#include <atb/atb_infer.h>
 #include <c10/core/ScalarType.h>
 #include <torch/torch.h>
 
@@ -26,13 +25,11 @@ limitations under the License.
 #include "core/layers/lm_head.h"
 #include "core/layers/qwen2_decoder_layer.h"
 #include "core/layers/qwen2_vision_encode_layer.h"
-#include "core/layers/rms_norm.h"
 #include "models/llm/qwen2.h"
 #include "models/model_registry.h"
 #include "processors/input_processor.h"
 #include "processors/qwen2_vl_image_processor.h"
 #include "qwen2_5_vl.h"
-#include "xllm_kernels/core/include/atb_speed/log.h"
 
 namespace xllm {
 
@@ -67,11 +64,6 @@ class Qwen2_VisionBlockImpl : public torch::nn::Module {
     // call each submodule's load_state_dict function
     encoder_layer_->load_state_dict(state_dict);
   }
-
-  void verify_loaded_weights(const std::string& prefix) const {
-    encoder_layer_->verify_loaded_weights();
-  }
-  void merge_loaded_weights() { encoder_layer_->merge_loaded_weights(); }
 
  private:
   layer::Qwen2VisionEncoderLayer encoder_layer_{nullptr};
@@ -385,8 +377,6 @@ class Qwen2_VisionTransformerImpl : public torch::nn::Module {
     cu_seqlens = F::pad(
         cu_seqlens, F::PadFuncOptions({1, 0}).mode(torch::kConstant).value(0));
 
-    // transformers
-    cu_seqlens = torch::diff(cu_seqlens);
     m_cos = rotary_pos_emb.cos().type_as(hidden_states);
     m_cos = m_cos.repeat({1, 2});
     m_sin = rotary_pos_emb.sin().type_as(hidden_states);
@@ -420,21 +410,6 @@ class Qwen2_VisionTransformerImpl : public torch::nn::Module {
     }
 
     merger_->load_state_dict(state_dict.get_dict_with_prefix("merger."));
-  }
-
-  void verify_loaded_weights(const std::string& prefix) const {
-    patch_embed_->verify_loaded_weights(prefix + "patch_embed.");
-    for (int idx = 0; idx < blocks_->size(); ++idx) {
-      layers_[idx]->verify_loaded_weights(prefix + "blocks." +
-                                          std::to_string(idx) + ".");
-    }
-    merger_->verify_loaded_weights(prefix + "merger.");
-  }
-
-  void merge_loaded_weights() {
-    for (int idx = 0; idx < blocks_->size(); ++idx) {
-      layers_[idx]->merge_loaded_weights();
-    }
   }
 
  private:
@@ -535,9 +510,6 @@ class Qwen2_VLForConditionalGenerationImpl : public torch::nn::Module {
     for (const auto& state_dict : loader->get_state_dicts()) {
       visual_->load_state_dict(state_dict->get_dict_with_prefix("visual."));
     }
-    // verify
-    visual_->verify_loaded_weights("visual.");
-    visual_->merge_loaded_weights();
     if (!model_args_.image_embedding_mode()) {
       language_model_->load_model(std::move(loader));
     }

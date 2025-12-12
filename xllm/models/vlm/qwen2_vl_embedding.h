@@ -98,9 +98,6 @@ class Qwen2_VLForEmbeddingImpl : public torch::nn::Module {
     for (const auto& state_dict : loader->get_state_dicts()) {
       visual_->load_state_dict(state_dict->get_dict_with_prefix("visual."));
     }
-    // verify
-    visual_->verify_loaded_weights("visual.");
-    visual_->merge_loaded_weights();
     // if (!model_args_.image_embedding_mode()) {
     language_model_->load_model(std::move(loader));
     // }

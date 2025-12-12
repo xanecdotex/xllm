@@ -42,7 +42,7 @@ limitations under the License.
 namespace xllm {
 namespace layer {
 
-class NpuQwen2VisionEncoderLayerImpl : public NpuBaseLayer {
+class NpuQwen2VisionEncoderLayerImpl : public BaseLayer {
  public:
   explicit NpuQwen2VisionEncoderLayerImpl(const ModelContext& context);
 
