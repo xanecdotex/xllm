@@ -90,6 +90,7 @@ void NpuQwen3VisionEncoderLayerImpl::param_from_args(
   param.rank = parallel_args.rank();
   param.backend = "lccl";
   param.enableLogN = false;
+  param.MLPActivationType = atb::infer::ActivationType::ACTIVATION_GELU;
 }
 
 NpuQwen3VisionEncoderLayerImpl::NpuQwen3VisionEncoderLayerImpl(
