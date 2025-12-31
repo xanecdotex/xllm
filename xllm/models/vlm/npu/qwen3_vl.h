@@ -626,7 +626,6 @@ struct Qwen3_VLImageInputs {
 struct Qwen3_VLVideoInputs {
   torch::Tensor pixel_values_videos;
   torch::Tensor video_grid_thw;
-  torch::Tensor second_per_grid_ts;
 };
 
 class Qwen3_VLForConditionalGenerationImpl : public torch::nn::Module {
@@ -829,7 +828,7 @@ class Qwen3_VLForConditionalGenerationImpl : public torch::nn::Module {
 };
 TORCH_MODULE(Qwen3_VLForConditionalGeneration);
 
-REGISTER_INPUT_PROCESSOR(qwen3_vl, Qwen2_5_VLInputProcessor);
+REGISTER_INPUT_PROCESSOR(qwen3_vl, Qwen3_VLInputProcessor);
 REGISTER_CAUSAL_VLM_MODEL(qwen3_vl, Qwen3_VLForConditionalGeneration);
 REGISTER_IMAGE_PROCESSOR(qwen3_vl, Qwen2VLImageProcessor);
 
