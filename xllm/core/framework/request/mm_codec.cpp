@@ -120,18 +120,21 @@ class MemoryMediaReader {
   bool init(AVMediaType type) {
     fmt_ctx_ = avformat_alloc_context();
     if (!fmt_ctx_) {
+      LOG(ERROR) << "MemoryMediaReader init failed for avformat_alloc_context";
       return false;
     }
     constexpr int32_t avio_buf_sz = 1 << 16;
     avio_buf_ =
         static_cast<uint8_t*>(av_malloc(static_cast<size_t>(avio_buf_sz)));
     if (!avio_buf_) {
+      LOG(ERROR) << "MemoryMediaReader init failed for av_malloc buffer";
       return false;
     }
 
     avio_ctx_ = avio_alloc_context(
         avio_buf_, avio_buf_sz, 0, &mc_, &Reader::read, nullptr, &Reader::seek);
     if (!avio_ctx_) {
+      LOG(ERROR) << "MemoryMediaReader init failed for avio_alloc_context";
       return false;
     }
     avio_buf_ = nullptr;
@@ -141,37 +144,47 @@ class MemoryMediaReader {
     fmt_ctx_->flags |= AVFMT_FLAG_CUSTOM_IO;
 
     if (avformat_open_input(&fmt_ctx_, nullptr, nullptr, nullptr) < 0) {
+      LOG(ERROR) << "MemoryMediaReader init failed for avformat_open_input";
       return false;
     }
 
     if (avformat_find_stream_info(fmt_ctx_, nullptr) < 0) {
+      LOG(ERROR)
+          << "MemoryMediaReader init failed for avformat_find_stream_info";
       return false;
     }
 
     stream_index_ = av_find_best_stream(fmt_ctx_, type, -1, -1, nullptr, 0);
     if (stream_index_ < 0) {
+      LOG(ERROR) << "MemoryMediaReader init failed for av_find_best_stream";
       return false;
     }
 
     AVStream* st = fmt_ctx_->streams[stream_index_];
     const AVCodec* codec = avcodec_find_decoder(st->codecpar->codec_id);
     if (!codec) {
+      LOG(ERROR) << "MemoryMediaReader init failed for avcodec_find_decoder";
       return false;
     }
 
     codec_ctx_ = avcodec_alloc_context3(codec);
     if (!codec_ctx_) {
+      LOG(ERROR) << "MemoryMediaReader init failed for avcodec_alloc_context3";
       return false;
     }
 
     if (avcodec_parameters_to_context(codec_ctx_, st->codecpar) < 0 ||
         avcodec_open2(codec_ctx_, codec, nullptr) < 0) {
+      LOG(ERROR) << "MemoryMediaReader init failed for "
+                    "avcodec_parameters_to_context/avcodec_open2";
       return false;
     }
 
     pkt_ = av_packet_alloc();
     frm_ = av_frame_alloc();
     if (!pkt_ || !frm_) {
+      LOG(ERROR)
+          << "MemoryMediaReader init failed for av_packet_alloc/av_frame_alloc";
       return false;
     }
 
@@ -259,6 +272,7 @@ class MemoryVideoReader : public MemoryMediaReader {
       return false;
     }
     if (frames_.empty()) {
+      LOG(ERROR) << "MediaVideoReader got no frame";
       return false;
     }
 
@@ -285,6 +299,7 @@ class MemoryVideoReader : public MemoryMediaReader {
                                 nullptr,
                                 nullptr);
       if (!sws_ctx_) {
+        LOG(ERROR) << "MediaVideoReader decode failed for sws_getContext";
         return false;
       }
     }
@@ -294,6 +309,7 @@ class MemoryVideoReader : public MemoryMediaReader {
     if (!rgb_frame_) {
       rgb_frame_ = av_frame_alloc();
       if (!rgb_frame_) {
+        LOG(ERROR) << "MediaVideoReader decode failed for av_frame_alloc";
         return false;
       }
     }
@@ -306,10 +322,12 @@ class MemoryVideoReader : public MemoryMediaReader {
       rgb_frame_->width = f->width;
       rgb_frame_->height = f->height;
       if (av_frame_get_buffer(rgb_frame_, 0) < 0) {
+        LOG(ERROR) << "MediaVideoReader decode failed for av_frame_get_buffer";
         return false;
       }
     }
     if (av_frame_make_writable(rgb_frame_) < 0) {
+      LOG(ERROR) << "MediaVideoReader decode failed for av_frame not writable";
       return false;
     }
 
@@ -321,6 +339,7 @@ class MemoryVideoReader : public MemoryMediaReader {
                   f->height,
                   rgb_frame_->data,
                   rgb_frame_->linesize) != f->height) {
+      LOG(ERROR) << "MediaVideoReader decode failed for sws_scale";
       return false;
     }
 
@@ -367,11 +386,13 @@ class MemoryAudioReader : public MemoryMediaReader {
     // setup resampler
     swr_ctx_ = swr_alloc();
     if (!swr_ctx_) {
+      LOG(ERROR) << "MemoryAudioReader init failed for swr_alloc";
       return false;
     }
 
     AVChannelLayout in_layout;
     if (av_channel_layout_copy(&in_layout, &codec_ctx_->ch_layout) < 0) {
+      LOG(ERROR) << "MemoryAudioReader init failed for av_channel_layout_copy";
       return false;
     }
 
@@ -387,6 +408,7 @@ class MemoryAudioReader : public MemoryMediaReader {
                             codec_ctx_->sample_rate,
                             0,
                             nullptr) < 0) {
+      LOG(ERROR) << "MemoryAudioReader init failed for swr_alloc_set_opts2";
       av_channel_layout_uninit(&out_layout);
       av_channel_layout_uninit(&in_layout);
       return false;
@@ -405,6 +427,7 @@ class MemoryAudioReader : public MemoryMediaReader {
     }
 
     if (swr_init(swr_ctx_) < 0) {
+      LOG(ERROR) << "MemoryAudioReader init failed for swr_init";
       return false;
     }
 
@@ -431,6 +454,7 @@ class MemoryAudioReader : public MemoryMediaReader {
     }
 
     if (pcm_.empty()) {
+      LOG(ERROR) << "MemoryAudioReader decode failed for PCM buffer is empty";
       return false;
     }
 
@@ -464,6 +488,7 @@ class MemoryAudioReader : public MemoryMediaReader {
   int32_t resample_to_pcm(const uint8_t** in_data, int32_t nb_samples) {
     int32_t out_nb = swr_get_out_samples(swr_ctx_, nb_samples);
     if (out_nb < 0) {
+      LOG(ERROR) << "MemoryAudioReader decode failed for swr_get_out_samples";
       return out_nb;
     }
     if (out_nb == 0) {
@@ -478,6 +503,7 @@ class MemoryAudioReader : public MemoryMediaReader {
     int32_t converted =
         swr_convert(swr_ctx_, out_data, out_nb, in_data, nb_samples);
     if (converted < 0) {
+      LOG(ERROR) << "MemoryAudioReader decode failed for swr_convert";
       return converted;
     }
     if (converted == 0) {
@@ -541,7 +567,7 @@ bool OpenCVImageEncoder::encode(const torch::Tensor& t, std::string& raw_data) {
 
 bool OpenCVImageEncoder::valid(const torch::Tensor& t) {
   if (t.dim() != 3 || t.size(0) != 3) {
-    LOG(ERROR) << "input tensor must be 3HW  tensor";
+    LOG(ERROR) << "input tensor must be 3HW tensor";
     return false;
   }
 
@@ -560,7 +586,6 @@ bool FFmpegVideoDecoder::decode(const std::string& raw_data,
                            raw_data.size());
 
   if (!reader.init(metadata) || !reader.read(t, metadata)) {
-    LOG(INFO) << "video decode faild";
     return false;
   }
   return true;
@@ -573,7 +598,6 @@ bool FFmpegAudioDecoder::decode(const std::string& raw_data,
                            raw_data.size());
 
   if (!reader.init(metadata) || !reader.read(t, metadata)) {
-    LOG(INFO) << "audio decode faild";
     return false;
   }
   return true;
