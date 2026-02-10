@@ -402,11 +402,11 @@ std::shared_ptr<Request> VLMMaster::generate_request(
   Timer timer;
   static MMInputTransfer mm_input_transfer;
 
+  std::string err_msg;
   MMInput mm_inputs(std::move(payload));
-  if (!mm_input_transfer.trans(messages, mm_inputs)) {
-    LOG(ERROR) << "mm input trans failed.";
-    CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT,
-                        "MM input transfer trans failed.");
+  if (!mm_input_transfer.trans(messages, mm_inputs, err_msg)) {
+    LOG(ERROR) << err_msg;
+    CALLBACK_WITH_ERROR(StatusCode::INVALID_ARGUMENT, err_msg);
     return nullptr;
   }
 

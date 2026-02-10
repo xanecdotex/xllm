@@ -27,8 +27,9 @@ class MMEmbeddingHandler : public MMHandlerBase {
 
   virtual bool load(const MMContent& content,
                     MMInputItem& input,
-                    MMPayload& payload) override;
-  virtual bool decode(MMInputItem& input) override;
+                    MMPayload& payload,
+                    std::string& err_msg) override;
+  virtual bool decode(MMInputItem& input, std::string& err_msg) override;
 
  private:
   MMType::Value mm_type_;

@@ -151,12 +151,15 @@ class MMInputTransfer {
   MMInputTransfer();
   ~MMInputTransfer();
 
-  bool trans(const std::vector<Message>& messages, MMInput& inputs);
+  bool trans(const std::vector<Message>& messages,
+             MMInput& inputs,
+             std::string& err_msg);
 
  private:
   bool trans(const MMContentVec& mmc,
              std::vector<MMInputItem>& inputs,
-             MMPayload& payload);
+             MMPayload& payload,
+             std::string& err_msg);
 
   std::unique_ptr<MMHandlerSet> mm_handlers_;
 };

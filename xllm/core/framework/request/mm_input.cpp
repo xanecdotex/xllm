@@ -28,7 +28,8 @@ MMInputTransfer::MMInputTransfer() {
 MMInputTransfer::~MMInputTransfer() {}
 
 bool MMInputTransfer::trans(const std::vector<Message>& messages,
-                            MMInput& inputs) {
+                            MMInput& inputs,
+                            std::string& err_msg) {
   inputs.clear();
   std::vector<MMInputItem> ins;
 
@@ -36,7 +37,7 @@ bool MMInputTransfer::trans(const std::vector<Message>& messages,
     const auto& message = messages[idx];
     const auto& mmc = std::get<MMContentVec>(message.content);
 
-    if (!this->trans(mmc, ins, inputs.payload())) {
+    if (!this->trans(mmc, ins, inputs.payload(), err_msg)) {
       return false;
     }
 
@@ -47,7 +48,8 @@ bool MMInputTransfer::trans(const std::vector<Message>& messages,
 
 bool MMInputTransfer::trans(const MMContentVec& mmc,
                             std::vector<MMInputItem>& inputs,
-                            MMPayload& payload) {
+                            MMPayload& payload,
+                            std::string& err_msg) {
   inputs.clear();
   for (int idx = 0; idx < mmc.size(); ++idx) {
     const auto& item = mmc[idx];
@@ -55,7 +57,7 @@ bool MMInputTransfer::trans(const MMContentVec& mmc,
 
     if (type != "text") {
       MMInputItem input;
-      if (!mm_handlers_->process(type, item, input, payload)) {
+      if (!mm_handlers_->process(type, item, input, payload, err_msg)) {
         return false;
       }
 

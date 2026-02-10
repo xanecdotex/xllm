@@ -34,22 +34,29 @@ class MMHandlerBase {
 
   bool process(const MMContent& content,
                MMInputItem& input,
-               MMPayload& payload);
+               MMPayload& payload,
+               std::string& err_msg);
 
   virtual bool load(const MMContent& content,
                     MMInputItem& input,
-                    MMPayload& payload) = 0;
+                    MMPayload& payload,
+                    std::string& err_msg) = 0;
 
-  virtual bool decode(MMInputItem& input) = 0;
+  virtual bool decode(MMInputItem& input, std::string& err_msg) = 0;
 
  protected:
   bool load_from_dataurl(const std::string& url,
                          std::string& data,
-                         MMPayload& payload);
+                         MMPayload& payload,
+                         const std::string& media_type,
+                         std::string& err_msg);
 
   bool load_from_local(const std::string& url, std::string& data);
 
-  bool load_from_http(const std::string& url, std::string& data);
+  bool load_from_http(const std::string& url,
+                      std::string& data,
+                      const std::string& media_type,
+                      std::string& err_msg);
 
  protected:
   std::string httpurl_prefix_{"http"};
@@ -62,8 +69,9 @@ class ImageHandler : public MMHandlerBase {
 
   virtual bool load(const MMContent& content,
                     MMInputItem& input,
-                    MMPayload& payload) override;
-  virtual bool decode(MMInputItem& input) override;
+                    MMPayload& payload,
+                    std::string& err_msg) override;
+  virtual bool decode(MMInputItem& input, std::string& err_msg) override;
 
  private:
   std::string dataurl_prefix_{"data:image"};
@@ -76,8 +84,9 @@ class VideoHandler : public MMHandlerBase {
 
   virtual bool load(const MMContent& content,
                     MMInputItem& input,
-                    MMPayload& payload) override;
-  virtual bool decode(MMInputItem& input) override;
+                    MMPayload& payload,
+                    std::string& err_msg) override;
+  virtual bool decode(MMInputItem& input, std::string& err_msg) override;
 
  private:
   std::string dataurl_prefix_{"data:video"};
@@ -90,8 +99,9 @@ class AudioHandler : public MMHandlerBase {
 
   virtual bool load(const MMContent& content,
                     MMInputItem& input,
-                    MMPayload& payload) override;
-  virtual bool decode(MMInputItem& input) override;
+                    MMPayload& payload,
+                    std::string& err_msg) override;
+  virtual bool decode(MMInputItem& input, std::string& err_msg) override;
 
  private:
   std::string dataurl_prefix_{"data:audio"};
@@ -105,7 +115,8 @@ class MMHandlerSet {
   bool process(const std::string& type,
                const MMContent& content,
                MMInputItem& input,
-               MMPayload& payload);
+               MMPayload& payload,
+               std::string& err_msg);
 
  private:
   std::unordered_map<std::string, std::unique_ptr<MMHandlerBase>> handlers_;

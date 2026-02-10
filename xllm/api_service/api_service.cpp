@@ -293,19 +293,19 @@ void handle_chat_completions(std::unique_ptr<Service>& service,
   std::string attachment;
   ctrl->request_attachment().copy_to(&attachment, content_len, 0);
 
-  auto [preprocess_status, processed_json] =
-      pre_process_chat_json(std::move(attachment));
-  if (!preprocess_status.ok()) {
-    ctrl->SetFailed(preprocess_status.message());
-    LOG(ERROR) << "Complex message preprocessing failed: "
-               << preprocess_status.message();
-    return;
-  }
+  // auto [preprocess_status, processed_json] =
+  //     pre_process_chat_json(std::move(attachment));
+  // if (!preprocess_status.ok()) {
+  //   ctrl->SetFailed(preprocess_status.message());
+  //   LOG(ERROR) << "Complex message preprocessing failed: "
+  //              << preprocess_status.message();
+  //   return;
+  // }
 
   google::protobuf::util::JsonParseOptions options;
   options.ignore_unknown_fields = true;
-  auto status = google::protobuf::util::JsonStringToMessage(
-      processed_json, req_pb, options);
+  auto status =
+      google::protobuf::util::JsonStringToMessage(attachment, req_pb, options);
   if (!status.ok()) {
     ctrl->SetFailed(status.ToString());
     LOG(ERROR) << "parse json to proto failed: " << status.ToString();
