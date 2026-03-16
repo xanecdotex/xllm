@@ -44,6 +44,7 @@ class Qwen3_VLInputProcessor : public InputProcessor {
   }
 
   void process(std::string& prompt, const MMData& mm_data) override {
+    LOG(INFO) << "!!!";
     torch::Tensor image_grid_thw;
     if (auto res = mm_data.get<torch::Tensor>("image_grid_thw"))
       image_grid_thw = res.value();
@@ -150,6 +151,7 @@ class Qwen3_VLInputProcessor : public InputProcessor {
 
     if (begin < prompt.size()) data.append(prompt, begin, std::string::npos);
     prompt = std::move(data);
+    LOG(INFO) << prompt;
   }
 
  private:
@@ -890,10 +892,12 @@ class Qwen3_VLForConditionalGenerationImpl : public torch::nn::Module {
   }
 
   torch::Tensor generate_multimodal_mask(torch::Tensor input_ids) {
+    LOG(INFO) << "input_ids:" << input_ids.sizes();
     auto special_token_ids = torch::tensor(
         {model_args_.image_token_id(), model_args_.video_token_id()},
         input_ids.options().dtype(torch::kInt64));
     auto is_multimodal = torch::isin(input_ids, special_token_ids);
+    LOG(INFO) << "ismultimodal" << is_multimodal;
     return is_multimodal;
   }
 
@@ -929,7 +933,18 @@ class Qwen3_VLForConditionalGenerationImpl : public torch::nn::Module {
     if (!multimodal_embeds.defined()) {
       return inputs_embeds;
     }
+    LOG(INFO) << "inputs_embeds:" << inputs_embeds.sizes();
     auto is_multimodal = generate_multimodal_mask(input_ids);
+
+    LOG(INFO) << "mask=" << is_multimodal.sizes()
+              << " input_ids=" << input_ids.sizes();
+
+    // 2) embedding 行数必须等于 multimodal token 个数
+    auto k = is_multimodal.sum().item<int64_t>();
+
+    LOG(INFO) << "multimodal tokens: embeds=" << multimodal_embeds.sizes()
+              << " k=" << k;
+
     input_params.visual_pos_masks = is_multimodal;
     inputs_embeds = merge_multimodal_embeddings(
         inputs_embeds, multimodal_embeds, is_multimodal);

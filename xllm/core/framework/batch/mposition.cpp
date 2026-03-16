@@ -81,7 +81,7 @@ std::tuple<torch::Tensor, int> MPositionHelper::get_positions_qwen3(
   auto video_token_id = args_.video_token_id();
   auto vision_start_token_id = args_.vision_start_token_id();
   auto spatial_merge_size = args_.mm_spatial_merge_size();
-
+  LOG(INFO) << "image_grid_thw: " << image_grid_thw.sizes();
   // ---- 对齐 Python：视频 grid 按帧拆，并令每帧 t=1 ----
   if (video_grid_thw.defined() && video_grid_thw.numel() > 0) {
     // video_grid_thw: [num_videos, 3], col0 = t(num_frames)
@@ -92,7 +92,7 @@ std::tuple<torch::Tensor, int> MPositionHelper::get_positions_qwen3(
     // 每段代表 1 帧：t=1
     video_grid_thw.index_put_({torch::indexing::Slice(), 0}, 1);
   }
-
+  LOG(INFO) << "video_grid_thw: " << video_grid_thw.sizes();
   auto input_tokens = seq_.tokens();
   auto input_tokens_tensor =
       torch::tensor(std::vector<int>(input_tokens), torch::kLong);
@@ -111,7 +111,7 @@ std::tuple<torch::Tensor, int> MPositionHelper::get_positions_qwen3(
   int st = 0;
   int remain_images = image_nums, remain_videos = video_nums;
   int image_index = 0, video_index = 0;
-
+  LOG(INFO) << "image_nums: " << image_nums << " video_nums: " << video_nums;
   // 用 vector<int> 做 find/index（跟你 get_positions_p 一样）
   // 注意：这里不需要 second_per_grid_ts，也不需要 tokens_per_second
   for (int i = 0; i < image_nums + video_nums; ++i) {
@@ -131,6 +131,7 @@ std::tuple<torch::Tensor, int> MPositionHelper::get_positions_qwen3(
         ed_video = (int)std::distance(input_tokens.begin(), it);
     }
 
+    LOG(INFO) << "ed_image: " << ed_image << " ed_video: " << ed_video;
     int64_t t = 0, h = 0, w = 0;
     int ed = 0;
 
@@ -169,6 +170,7 @@ std::tuple<torch::Tensor, int> MPositionHelper::get_positions_qwen3(
       llm_pos_ids_list.push_back(text_pos);
     }
 
+    LOG(INFO) << "llm_grid_t: " << llm_grid_t;
     // ---- Qwen3-VL：t_index 不编码绝对时间 ----
     // llm_grid_t==1 => t_index 全 0（对齐 Python 注释：t_index is always 0）
     auto t_index = torch::arange(llm_grid_t, torch::kInt32)
@@ -186,12 +188,14 @@ std::tuple<torch::Tensor, int> MPositionHelper::get_positions_qwen3(
                        .expand({llm_grid_t, llm_grid_h, -1})
                        .flatten();
 
+    LOG(INFO) << "t_index: " << t_index;
     auto visual_pos =
         torch::stack({t_index, h_index, w_index}) + text_len + st_idx;
     llm_pos_ids_list.push_back(visual_pos);
 
     st = ed + llm_grid_t * llm_grid_h * llm_grid_w;
   }
+  LOG(INFO) << "llm_pos_ids_list: " << llm_pos_ids_list;
 
   if (st < (int)input_tokens.size()) {
     int st_idx = 0;
@@ -204,6 +208,7 @@ std::tuple<torch::Tensor, int> MPositionHelper::get_positions_qwen3(
     llm_pos_ids_list.push_back(text_pos);
   }
 
+  LOG(INFO) << "2llm_pos_ids_list: " << llm_pos_ids_list;
   auto llm_positions = torch::cat(llm_pos_ids_list, 1).reshape({3, -1});
   int mrope_position_delta =
       llm_positions.max().item<int>() + 1 - (int)input_tokens.size();

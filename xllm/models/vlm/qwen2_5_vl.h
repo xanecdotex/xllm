@@ -43,6 +43,7 @@ class Qwen2_5_VLInputProcessor : public InputProcessor {
   }
 
   void process(std::string& prompt, const MMData& mm_data) override {
+    LOG(INFO) << "!!!";
     torch::Tensor image_grid_thw;
     if (auto res = mm_data.get<torch::Tensor>("image_grid_thw"))
       image_grid_thw = res.value();

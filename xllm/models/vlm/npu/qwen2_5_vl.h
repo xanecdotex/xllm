@@ -47,6 +47,7 @@ class Qwen2_5_VLInputProcessor : public InputProcessor {
 
  public:
   Qwen2_5_VLInputProcessor(const ModelArgs& args) {
+    LOG(INFO) << "!!!";
     merge_size_ = args.mm_image_merge_size();
     vision_start_token_id_ = args.vision_start_token_id();
     vision_end_token_id_ = args.vision_end_token_id();
