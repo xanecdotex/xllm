@@ -48,7 +48,6 @@ class Qwen3_VLInputProcessor : public InputProcessor {
   }
 
   void process(std::string& prompt, const MMData& mm_data) override {
-    LOG(INFO) << "!!!";
     torch::Tensor image_grid_thw;
     if (auto res = mm_data.get<torch::Tensor>("image_grid_thw"))
       image_grid_thw = res.value();
@@ -88,6 +87,8 @@ class Qwen3_VLInputProcessor : public InputProcessor {
 
     size_t total_token_len = total_image_token * image_token_.size() +
                              total_video_token * video_token_.size();
+    LOG(INFO) << "total_video_token:" << total_video_token;
+    LOG(INFO) << "total_token_len:" << total_token_len;
     std::string data;
     data.reserve(prompt.size() + total_token_len);
 
@@ -102,18 +103,22 @@ class Qwen3_VLInputProcessor : public InputProcessor {
     auto pair = find_vision_token(prompt, begin);
 
     while (pair.second != std::string::npos) {
+      data.append(prompt, begin, pair.second - begin);
       if (pair.first == TokenType::IMAGE) {
         grid_thw = &image_grid_thw;
         token = &image_token_;
         index = &image_index;
         auto token_num =
             (*grid_thw)[(*index)].prod().item<int>() / merge_length;
+        LOG(INFO) << "token_num:" << token_num;
         while (token_num--) data.append(*token);
 
         ++(*index);
         begin = pair.second + token->size();
+        pair = find_vision_token(prompt, begin);
 
       } else if (pair.first == TokenType::VIDEO) {
+        LOG(INFO) << "=====video======";
         const size_t pos = pair.second;
 
         const size_t vs_len = vision_start_token_.size();
@@ -138,56 +143,89 @@ class Qwen3_VLInputProcessor : public InputProcessor {
         const int frame_seqlen = (grid_h * grid_w) / merge_length;
 
         auto& meta = video_metadata[video_index];
-        CHECK(!meta.timestamps.empty());
-        auto selected =
-            build_timestamps(meta.timestamps, static_cast<size_t>(num_frames));
+        auto selected = build_timestamps(meta.timestamps, (size_t)num_frames);
+        LOG(INFO) << "selected:" << selected;
+        LOG(INFO) << "num_frames:" << num_frames;
 
         for (int f = 0; f < num_frames; ++f) {
+          LOG(INFO) << "frames:" << f;
           data.append(format_timestamp_str(selected[f]));
           data.append(vision_start_token_);
           int n = frame_seqlen;
           while (n--) data.append(video_token_);
           data.append(vision_end_token_);
         }
-
         ++video_index;
+        LOG(INFO) << "video_index:" << video_index;
         begin = advance_end;
+        LOG(INFO) << "begin:" << begin;
+        pair = find_vision_token(prompt, begin);
+        continue;
       } else {
         assert(false);
       }
-
-      pair = find_vision_token(prompt, begin);
     }
-
+    LOG(INFO) << "begin:" << begin;
     if (begin < prompt.size()) data.append(prompt, begin, std::string::npos);
     prompt = std::move(data);
-    LOG(INFO) << prompt;
+    LOG(INFO) << "prompt:" << prompt.size();
   }
 
-  void find_mm_spans(const std::vector<int>& prompt, MMData& mm_data) {
-    auto start = prompt.begin();
+  void find_mm_spans(const std::vector<int>& prompt_tokens,
+                     MMData& mm_data) override {
+    auto start = prompt_tokens.begin();
     uint32_t global_mm_index = 0;
-    uint32_t offset = 0;
-    uint32_t length = 0;
-    auto& mm_items = mm_data.items<MMItemVec>();
-    while (true) {
-      auto vision_start_it =
-          std::find(start, prompt.end(), vision_start_token_id_);
-      auto vision_end_it = std::find(start, prompt.end(), vision_end_token_id_);
-      if (vision_start_it == prompt.end()) {
-        break;
-      }
-      offset = std::distance(prompt.begin(), vision_start_it);
-      length = std::distance(vision_start_it + 1, vision_end_it);
 
-      auto& item = mm_items[global_mm_index];
-      if (*(vision_start_it + 1) == image_token_id_) {
+    auto& mm_items = mm_data.items<MMItemVec>();
+
+    torch::Tensor video_grid_thw;
+    if (auto res = mm_data.get<torch::Tensor>("video_grid_thw")) {
+      video_grid_thw = res.value();
+    }
+    int video_index = 0;
+    int video_frames_left = 0;
+
+    while (true) {
+      auto vs_it =
+          std::find(start, prompt_tokens.end(), vision_start_token_id_);
+      if (vs_it == prompt_tokens.end()) break;
+
+      auto ve_it = std::find(vs_it, prompt_tokens.end(), vision_end_token_id_);
+      CHECK(ve_it != prompt_tokens.end());
+
+      uint32_t offset = std::distance(prompt_tokens.begin(), vs_it);
+      uint32_t length = std::distance(vs_it + 1, ve_it);
+
+      int inner0 = *(vs_it + 1);
+      if (inner0 == image_token_id_) {
+        CHECK(global_mm_index < mm_items.size());
+        auto& item = mm_items[global_mm_index];
         item.mutable_state().mutable_token_pos() = {offset + 1, length};
-      } else if (*(vision_start_it + 1) == video_token_id_) {
-        item.mutable_state().mutable_token_pos() = {offset + 1, length};
+        global_mm_index++;
+      } else if (inner0 == video_token_id_) {
+        if (video_frames_left == 0) {
+          if (video_grid_thw.defined() && video_grid_thw.numel() > 0) {
+            CHECK(video_index < video_grid_thw.size(0));
+            video_frames_left =
+                video_grid_thw[video_index][0].item<int>();  // grid_t
+          } else {
+            CHECK(false) << "video token exists but video_grid_thw is missing";
+          }
+
+          CHECK(global_mm_index < mm_items.size());
+          auto& item = mm_items[global_mm_index];
+          item.mutable_state().mutable_token_pos() = {
+              offset + 1, length};  // 仅记录第一个帧 block
+          global_mm_index++;
+          video_index++;
+        }
+
+        CHECK(video_frames_left > 0);
+        video_frames_left--;
+      } else {
       }
-      global_mm_index++;
-      start = std::next(vision_end_it);
+
+      start = std::next(ve_it);
     }
   }
 
