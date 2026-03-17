@@ -319,6 +319,7 @@ void BatchInputBuilder::extract_tokens_and_positions(Sequence* sequence,
     const auto& args = *args_;
     MPositionHelper helper(*sequence, args);
     state.mrope_positions_vec.emplace_back(helper.get_positions());
+    LOG(INFO) << "1";
   }
 
   // Process each token
@@ -335,6 +336,7 @@ void BatchInputBuilder::extract_tokens_and_positions(Sequence* sequence,
     handle_sampling_parameters(sequence, j, seq_len, state_ptr);
   }
 
+  LOG(INFO) << "2";
   // Add extra token id
   if (n_tokens == seq_len) {
     // last chunk of prefill and decode
@@ -342,8 +344,10 @@ void BatchInputBuilder::extract_tokens_and_positions(Sequence* sequence,
     state.extra_token_ids.emplace_back(-1);
     state.embedding_ids.emplace_back(sequence->get_embedding_id());
     state.request_ids.emplace_back(sequence->request_id());
+    LOG(INFO) << "3";
   } else {
     state.extra_token_ids.emplace_back(token_ids[seq_len]);
+    LOG(INFO) << "4";
   }
 }
 

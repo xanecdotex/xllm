@@ -66,8 +66,11 @@ torch::Tensor MPositionHelper::get_positions() {
       res = get_positions_glm(image_grid_thw, video_grid_thw);
     } else if (absl::StartsWith(args_.model_type(), "qwen3_vl")) {
       res = get_positions_qwen3(image_grid_thw, video_grid_thw);
+      LOG(INFO) << "pos sizes=" << std::get<0>(res).sizes()
+                << " delta=" << std::get<1>(res);
     }
     seq_.set_mrope_position_delta(std::get<1>(res));
+    LOG(INFO) << "seq";
     return std::get<0>(res);
   } else {
     return get_positions_d();
@@ -145,7 +148,7 @@ std::tuple<torch::Tensor, int> MPositionHelper::get_positions_qwen3(
       ed = ed_image;
     } else {
       auto grid = video_grid_thw[video_index];
-      t = grid[0].item<int64_t>();  // 这里已经被强制成 1 了
+      t = grid[0].item<int64_t>();
       h = grid[1].item<int64_t>();
       w = grid[2].item<int64_t>();
       ++video_index;
@@ -153,7 +156,7 @@ std::tuple<torch::Tensor, int> MPositionHelper::get_positions_qwen3(
       ed = ed_video;
     }
 
-    int llm_grid_t = (int)t;  // video: 永远 1
+    int llm_grid_t = (int)t;
     int llm_grid_h = (int)(h / spatial_merge_size);
     int llm_grid_w = (int)(w / spatial_merge_size);
 
@@ -210,8 +213,11 @@ std::tuple<torch::Tensor, int> MPositionHelper::get_positions_qwen3(
 
   LOG(INFO) << "2llm_pos_ids_list: " << llm_pos_ids_list;
   auto llm_positions = torch::cat(llm_pos_ids_list, 1).reshape({3, -1});
+  LOG(INFO) << "llm_positions:" << llm_positions.sizes();
+  LOG(INFO) << "input_tokens:" << (int)input_tokens.size();
   int mrope_position_delta =
       llm_positions.max().item<int>() + 1 - (int)input_tokens.size();
+  LOG(INFO) << "mrope_position_delta" << mrope_position_delta;
   return std::make_tuple(llm_positions, mrope_position_delta);
 }
 

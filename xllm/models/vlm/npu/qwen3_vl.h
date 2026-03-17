@@ -41,6 +41,10 @@ class Qwen3_VLInputProcessor : public InputProcessor {
  public:
   Qwen3_VLInputProcessor(const ModelArgs& args) {
     merge_size_ = args.mm_image_merge_size();
+    vision_start_token_id_ = args.vision_start_token_id();
+    vision_end_token_id_ = args.vision_end_token_id();
+    image_token_id_ = args.image_token_id();
+    video_token_id_ = args.video_token_id();
   }
 
   void process(std::string& prompt, const MMData& mm_data) override {
@@ -90,19 +94,25 @@ class Qwen3_VLInputProcessor : public InputProcessor {
     int image_index = 0;
     int video_index = 0;
 
+    const torch::Tensor* grid_thw = nullptr;
+    const std::string* token = nullptr;
+    int* index = 0;
+
     size_t begin = 0;
     auto pair = find_vision_token(prompt, begin);
 
     while (pair.second != std::string::npos) {
       if (pair.first == TokenType::IMAGE) {
-        data.append(prompt, begin, pair.second - begin);
+        grid_thw = &image_grid_thw;
+        token = &image_token_;
+        index = &image_index;
+        auto token_num =
+            (*grid_thw)[(*index)].prod().item<int>() / merge_length;
+        while (token_num--) data.append(*token);
 
-        int token_num =
-            image_grid_thw[image_index].prod().item<int>() / merge_length;
-        while (token_num--) data.append(image_token_);
+        ++(*index);
+        begin = pair.second + token->size();
 
-        ++image_index;
-        begin = pair.second + image_token_.size();
       } else if (pair.first == TokenType::VIDEO) {
         const size_t pos = pair.second;
 
@@ -154,6 +164,33 @@ class Qwen3_VLInputProcessor : public InputProcessor {
     LOG(INFO) << prompt;
   }
 
+  void find_mm_spans(const std::vector<int>& prompt, MMData& mm_data) {
+    auto start = prompt.begin();
+    uint32_t global_mm_index = 0;
+    uint32_t offset = 0;
+    uint32_t length = 0;
+    auto& mm_items = mm_data.items<MMItemVec>();
+    while (true) {
+      auto vision_start_it =
+          std::find(start, prompt.end(), vision_start_token_id_);
+      auto vision_end_it = std::find(start, prompt.end(), vision_end_token_id_);
+      if (vision_start_it == prompt.end()) {
+        break;
+      }
+      offset = std::distance(prompt.begin(), vision_start_it);
+      length = std::distance(vision_start_it + 1, vision_end_it);
+
+      auto& item = mm_items[global_mm_index];
+      if (*(vision_start_it + 1) == image_token_id_) {
+        item.mutable_state().mutable_token_pos() = {offset + 1, length};
+      } else if (*(vision_start_it + 1) == video_token_id_) {
+        item.mutable_state().mutable_token_pos() = {offset + 1, length};
+      }
+      global_mm_index++;
+      start = std::next(vision_end_it);
+    }
+  }
+
  private:
   std::pair<TokenType, size_t> find_vision_token(const std::string& prompt,
                                                  size_t begin) {
@@ -196,8 +233,11 @@ class Qwen3_VLInputProcessor : public InputProcessor {
   const std::string video_token_ = "<|video_pad|>";
   const std::string vision_start_token_ = "<|vision_start|>";
   const std::string vision_end_token_ = "<|vision_end|>";
-
-  int merge_size_ = 0;
+  int32_t vision_start_token_id_;
+  int32_t vision_end_token_id_;
+  int32_t image_token_id_;
+  int32_t video_token_id_;
+  int32_t merge_size_ = 0;
 };
 
 class Qwen3_VisionPatchEmbedImpl : public torch::nn::Module {
